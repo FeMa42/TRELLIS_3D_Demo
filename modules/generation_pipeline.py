@@ -1,0 +1,468 @@
+"""
+Generation pipeline module for TRELLIS Streamlit application.
+
+This module handles image and 3D model generation workflows including:
+- Image generation with FLUX pipeline
+- 3D model generation with TRELLIS pipeline
+- Content filtering and quality scoring
+- File management and exports
+
+Usage:
+    from modules.generation_pipeline import GenerationPipeline
+    
+    generator = GenerationPipeline()
+    images = generator.generate_images("A dragon", num_images=4)
+    video_path, glb_path = generator.generate_3d_model(selected_image)
+"""
+
+import os
+import gc
+import tempfile
+import random
+import numpy as np
+import torch
+import imageio
+from PIL import Image
+from typing import List, Optional, Tuple
+from trellis.utils import render_utils, postprocessing_utils
+from trellis.utils.postprocessing_utils import to_glb_simple
+
+
+class GenerationPipeline:
+    """
+    Handles image and 3D model generation workflows.
+    """
+    
+    def __init__(self, flux_pipeline=None, trellis_pipeline=None, reward_model=None, content_moderator=None):
+        """
+        Initialize the GenerationPipeline.
+
+        Args:
+            flux_pipeline: Image generation pipeline (FLUX or Gemini) - kept for backward compatibility
+            trellis_pipeline: TRELLIS 3D generation pipeline
+            reward_model: Model for scoring image quality
+            content_moderator: Content moderation system
+        """
+        self.image_pipeline = flux_pipeline  # Rename internally
+        self.trellis_pipeline = trellis_pipeline
+        self.reward_model = reward_model
+        self.content_moderator = content_moderator
+        
+        # Default generation parameters
+        self.default_guidance_scale = 0.0
+        self.default_num_inference_steps = 4
+        self.default_height = 512
+        self.default_width = 512
+        self.default_max_sequence_length = 256
+    
+    def set_models(self, flux_pipeline=None, trellis_pipeline=None, reward_model=None, content_moderator=None):
+        """
+        Set the pipeline models.
+
+        Args:
+            flux_pipeline: Image generation pipeline (FLUX or Gemini) - kept for backward compatibility
+            trellis_pipeline: TRELLIS 3D generation pipeline
+            reward_model: Model for scoring image quality
+            content_moderator: Content moderation system
+        """
+        if flux_pipeline is not None:
+            self.image_pipeline = flux_pipeline  # Assign to image_pipeline
+        if trellis_pipeline is not None:
+            self.trellis_pipeline = trellis_pipeline
+        if reward_model is not None:
+            self.reward_model = reward_model
+        if content_moderator is not None:
+            self.content_moderator = content_moderator
+    
+    def _create_enhanced_prompt(self, base_prompt: str) -> str:
+        """
+        Enhance the user prompt with 3D printing optimizations.
+        
+        Args:
+            base_prompt: Original user prompt
+            
+        Returns:
+            str: Enhanced prompt optimized for 3D printing
+        """
+        # prompt_suffix = (
+        #     ". A safe-for-work, G-rated, family-friendly depiction. "
+        #     "ZBrush digital sculpt, stylized 3D model. Single Object on neutral background."
+        #     "Solid, contiguous mesh, optimized for 3D printing with clean geometry and no fragile parts. "
+        # )
+        prompt_suffix = " Render of high quality 3D model on neutral background. Solid, contiguous mesh, optimized for 3D printing."
+        return base_prompt + prompt_suffix
+    
+    def _generate_seed(self, base_seed: Optional[int] = None) -> int:
+        """
+        Generate a random seed for reproducible results.
+        
+        Args:
+            base_seed: Optional base seed for reproducibility
+            
+        Returns:
+            int: Generated seed
+        """
+        if base_seed is not None and base_seed > 0:
+            random.seed(base_seed)
+        return random.randint(0, 999999)
+    
+    def generate_images(self, 
+                       prompt: str, 
+                       num_images: int = 4, 
+                       base_seed: Optional[int] = None,
+                       guidance_scale: Optional[float] = None,
+                       num_inference_steps: Optional[int] = None,
+                       height: int = 512,
+                       width: int = 512,
+                       max_sequence_length: int = 256) -> List[Image.Image]:
+        """
+        Generate images using the FLUX pipeline.
+        
+        Args:
+            prompt: Text description of desired object
+            num_images: Number of images to generate
+            base_seed: Optional seed for reproducibility
+            guidance_scale: Guidance scale for generation
+            num_inference_steps: Number of inference steps
+            height: Image height
+            width: Image width
+            max_sequence_length: Maximum sequence length
+            
+        Returns:
+            List of generated PIL Images
+        """
+        if self.image_pipeline is None:
+            raise ValueError("FLUX pipeline not loaded")
+        
+        # Generate seed
+        actual_seed = self._generate_seed(base_seed)
+        print(f"🎨 Generating images with seed: {actual_seed}")
+        
+        # Use provided parameters or defaults
+        guidance_scale = guidance_scale if guidance_scale is not None else self.default_guidance_scale
+        num_inference_steps = num_inference_steps if num_inference_steps is not None else self.default_num_inference_steps
+        
+        # Limit batch size to prevent memory issues
+        batch_size = min(num_images, 8)
+        if num_images > batch_size:
+            print(f"⚠️ Reducing number of images to {batch_size} due to batch size limit.")
+            num_images = batch_size
+        
+        # Enhance prompt for 3D printing
+        enhanced_prompt = self._create_enhanced_prompt(prompt)
+        
+        # Generate images
+        images = self.image_pipeline(
+            [enhanced_prompt] * batch_size,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            height=height, 
+            width=width,
+            max_sequence_length=max_sequence_length,
+            generator=torch.Generator("cpu").manual_seed(actual_seed)
+        ).images
+        
+        # Apply content filtering if available
+        if self.content_moderator is not None:
+            filtered_images = self.content_moderator.check_image_safety(images)
+        else:
+            filtered_images = images
+        
+        # Score and rank images if reward model is available
+        if len(filtered_images) > 0 and self.reward_model is not None:
+            try:
+                rewards = self.reward_model.score(enhanced_prompt, filtered_images)
+                top_indices = np.argsort(rewards)[-min(num_images, len(filtered_images)):]
+                filtered_images = [filtered_images[i] for i in top_indices]
+            except Exception as e:
+                print(f"⚠️ Warning: Could not score images: {e}")
+        
+        print(f"✅ Generated {len(filtered_images)} filtered images")
+        return filtered_images
+
+    def generate_images_return_raw(self, 
+                       prompt: str, 
+                       num_images: int = 4, 
+                       base_seed: Optional[int] = None,
+                       guidance_scale: Optional[float] = None,
+                       num_inference_steps: Optional[int] = None,
+                       height: int = 512,
+                       width: int = 512,
+                       max_sequence_length: int = 256) -> List[Image.Image]:
+        """
+        Generate images using the FLUX pipeline.
+        
+        Args:
+            prompt: Text description of desired object
+            num_images: Number of images to generate
+            base_seed: Optional seed for reproducibility
+            guidance_scale: Guidance scale for generation
+            num_inference_steps: Number of inference steps
+            height: Image height
+            width: Image width
+            max_sequence_length: Maximum sequence length
+            
+        Returns:
+            List of generated PIL Images
+        """
+        if self.image_pipeline is None:
+            raise ValueError("FLUX pipeline not loaded")
+        
+        # Generate seed
+        actual_seed = self._generate_seed(base_seed)
+        
+        # Use provided parameters or defaults
+        guidance_scale = guidance_scale if guidance_scale is not None else self.default_guidance_scale
+        num_inference_steps = num_inference_steps if num_inference_steps is not None else self.default_num_inference_steps
+        
+        # Limit batch size to prevent memory issues
+        batch_size = min(num_images, 8)
+        if num_images > batch_size:
+            print(f"⚠️ Reducing number of images to {batch_size} due to batch size limit.")
+            num_images = batch_size
+        
+        # Enhance prompt for 3D printing
+        # enhanced_prompt = self._create_enhanced_prompt(prompt)
+        enhanced_prompt = prompt 
+        
+        # Generate images
+        images = self.image_pipeline(
+            [enhanced_prompt] * batch_size,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            height=height, 
+            width=width,
+            max_sequence_length=max_sequence_length,
+            generator=torch.Generator("cpu").manual_seed(actual_seed)
+        ).images
+        
+        # Apply content filtering if available
+        if self.content_moderator is not None:
+            filtered_images = self.content_moderator.check_image_safety(images)
+        else:
+            filtered_images = images
+        
+        # Score and rank images if reward model is available
+        if len(filtered_images) > 0 and self.reward_model is not None:
+            try:
+                rewards = self.reward_model.score(enhanced_prompt, filtered_images)
+                top_indices = np.argsort(rewards)[-min(num_images, len(filtered_images)):]
+                filtered_images = [filtered_images[i] for i in top_indices]
+            except Exception as e:
+                print(f"⚠️ Warning: Could not score images: {e}")
+        
+        return filtered_images, images
+    
+    def generate_3d_model(self, 
+                         image: Image.Image, 
+                         base_seed: Optional[int] = None,
+                         sparse_structure_steps: int = 24,
+                         sparse_structure_cfg: float = 7.5,
+                         slat_steps: int = 24,
+                         slat_cfg: float = 3.0,
+                         sample_video=True, 
+                         texture_size=1024,
+                         use_simple_glb=True) -> Tuple[str, str]:
+        """
+        Generate a 3D model from an image using the TRELLIS pipeline.
+        
+        Args:
+            image: Input PIL Image
+            base_seed: Optional seed for reproducibility
+            sparse_structure_steps: Steps for sparse structure sampling
+            sparse_structure_cfg: CFG strength for sparse structure
+            slat_steps: Steps for slat sampling  
+            slat_cfg: CFG strength for slat sampling
+            sample_video: Whether to generate video output
+            texture_size: Size for texture rendering (when not using simple GLB)
+            use_simple_glb: Use memory-efficient GLB export (avoids 66TB bug)
+            
+        Returns:
+            Tuple of (video_path, glb_path)
+        """
+        if self.trellis_pipeline is None:
+            raise ValueError("TRELLIS pipeline not loaded")
+        
+        # Generate seed
+        actual_seed = self._generate_seed(base_seed)
+        print(f"🔮 Generating 3D model with seed: {actual_seed}")
+        
+        # Run TRELLIS pipeline with device context
+        # Set default device to match TRELLIS device for hardcoded .cuda() calls
+        original_device = torch.cuda.current_device()
+        
+        # Get correct device for TRELLIS operations
+        if (hasattr(self.trellis_pipeline, '_cpu_offload_enabled') and 
+            self.trellis_pipeline._cpu_offload_enabled and 
+            self.trellis_pipeline._offload_manager is not None):
+            # Use execution device from offload manager when CPU offloading is active
+            trellis_device = self.trellis_pipeline._offload_manager.execution_device
+        else:
+            # Use device of actual model parameters when no CPU offloading
+            trellis_device = next(self.trellis_pipeline.models['sparse_structure_flow_model'].parameters()).device
+        
+        target_device_idx = trellis_device.index if hasattr(trellis_device, 'index') else 0
+        
+        try:
+            torch.cuda.set_device(target_device_idx)
+            outputs = self.trellis_pipeline.run(
+                image,
+                seed=actual_seed,
+                sparse_structure_sampler_params={
+                    "steps": sparse_structure_steps,
+                    "cfg_strength": sparse_structure_cfg,
+                },
+                slat_sampler_params={
+                    "steps": slat_steps,
+                    "cfg_strength": slat_cfg,
+                },
+            )
+        finally:
+            # Restore original device
+            torch.cuda.set_device(original_device)
+        
+        # Create temporary directory for outputs
+        temp_dir = tempfile.mkdtemp()
+        
+        if sample_video:
+            # Render Gaussian Splatting video
+            video_gs = render_utils.render_video(outputs['gaussian'][0])['color']
+            # Save video
+            video_path = os.path.join(temp_dir, "gaussian_splat.mp4")
+            imageio.mimsave(video_path, video_gs, fps=30)
+        else:
+            video_path = ""
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        # Export GLB - choose method based on use_simple_glb parameter
+        glb_path = os.path.join(temp_dir, "3d_model.glb")
+        
+        if use_simple_glb:
+            # Use memory-efficient GLB export 
+            glb = to_glb_simple(
+                outputs['mesh'][0],
+                simplify=0.95,
+                color=(180, 180, 220),  # Light blue color
+                fill_holes=True,
+                remove_floating=True,
+                verbose=False
+            )
+        else:
+            # Use original GLB export with texture rendering
+            glb = postprocessing_utils.to_glb_new(
+                outputs['gaussian'][0],
+                outputs['mesh'][0],
+                # Existing parameters
+                fill_holes=True,
+                fill_holes_max_size=0.2,
+                simplify=0.98,
+                texture_size=texture_size,
+                brightness=1.5,
+                # New parameters for floating component removal
+                remove_floating=True,
+                min_component_ratio=0.03,  # Remove components smaller than 3% of total faces
+                min_component_faces=50,    # Or smaller than 50 faces absolute
+                use_voxel_cleanup=False,   # Set to True for very aggressive cleanup
+                voxel_resolution=256,
+            )
+        
+        glb.export(glb_path)
+        
+        # Clean up outputs to free memory
+        del outputs
+        
+        print(f"✅ 3D model generated: {video_path}, {glb_path}")
+        return video_path, glb_path
+    
+    def get_generation_info(self, seed: int) -> dict:
+        """
+        Get information about the generation parameters.
+        
+        Args:
+            seed: Seed used for generation
+            
+        Returns:
+            Dictionary with generation information
+        """
+        return {
+            "seed": seed,
+            "guidance_scale": self.default_guidance_scale,
+            "num_inference_steps": self.default_num_inference_steps,
+            "image_dimensions": f"{self.default_width}x{self.default_height}",
+            "content_filtering_enabled": self.content_moderator is not None,
+            "quality_scoring_enabled": self.reward_model is not None
+        }
+
+    @property
+    def flux_pipeline(self):
+        """Backward compatibility property."""
+        return self.image_pipeline
+    
+    def validate_models(self) -> dict:
+        """
+        Validate that required models are available.
+        
+        Returns:
+            Dictionary with model availability status
+        """
+        return {
+            "image_pipeline_available": self.image_pipeline is not None,
+            "flux_available": self.image_pipeline is not None,  # Backward compat
+            "trellis_available": self.trellis_pipeline is not None,
+            "reward_model_available": self.reward_model is not None,
+            "content_moderator_available": self.content_moderator is not None,
+            "image_generation_ready": self.image_pipeline is not None,
+            "3d_generation_ready": self.trellis_pipeline is not None
+        }
+
+
+# Global instance for easy access
+_global_generation_pipeline = None
+
+
+def get_generation_pipeline() -> GenerationPipeline:
+    """
+    Get the global GenerationPipeline instance.
+    
+    Returns:
+        GenerationPipeline: The global pipeline instance
+    """
+    global _global_generation_pipeline
+    if _global_generation_pipeline is None:
+        _global_generation_pipeline = GenerationPipeline()
+    return _global_generation_pipeline
+
+
+# Convenience functions for backward compatibility
+def generate_images(prompt: str, num_images: int = 4, base_seed: Optional[int] = None) -> List[Image.Image]:
+    """
+    Legacy function for image generation.
+    
+    Args:
+        prompt: Text description
+        num_images: Number of images to generate
+        base_seed: Optional seed
+        
+    Returns:
+        List of generated images
+    """
+    pipeline = get_generation_pipeline()
+    return pipeline.generate_images(prompt, num_images, base_seed)
+
+
+def generate_3d_model(image: Image.Image, base_seed: Optional[int] = None, use_simple_glb=True) -> Tuple[str, str]:
+    """
+    Legacy function for 3D model generation.
+    
+    Args:
+        image: Input image
+        base_seed: Optional seed
+        use_simple_glb: Use memory-efficient GLB export
+        
+    Returns:
+        Tuple of (video_path, glb_path)
+    """
+    pipeline = get_generation_pipeline()
+    return pipeline.generate_3d_model(image, base_seed, use_simple_glb=use_simple_glb)
