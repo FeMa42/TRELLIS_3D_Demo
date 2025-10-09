@@ -1,6 +1,6 @@
 export PATH=/mnt/damian/miniconda3/bin:$PATH 
 eval "$(conda shell.bash hook)"
-conda activate trellis_new
+conda activate trellis_gemma
 
 export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=false
@@ -31,6 +31,9 @@ export ENABLE_FLUX_CPU_OFFLOAD=true
 # Needs more time at start but faster inference 
 export COMPILE_FLUX_OPTIMIZATION=false 
 export USE_FLUX_DEV=true
+export IMAGE_MODEL=flux
+export ENABLE_IMAGE_CPU_OFFLOAD=true
+export FAST_IMAGE_SAMPLING=false
 
 streamlit run streamlit-app.py --server.fileWatcherType none
 
