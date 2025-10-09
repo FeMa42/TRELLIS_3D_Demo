@@ -33,7 +33,7 @@ class GenerationPipeline:
     Handles image and 3D model generation workflows.
     """
     
-    def __init__(self, flux_pipeline=None, trellis_pipeline=None, reward_model=None, content_moderator=None):
+    def __init__(self, flux_pipeline=None, trellis_pipeline=None, reward_model=None, content_moderator=None, max_batch_size: int = 4):
         """
         Initialize the GenerationPipeline.
 
@@ -42,18 +42,20 @@ class GenerationPipeline:
             trellis_pipeline: TRELLIS 3D generation pipeline
             reward_model: Model for scoring image quality
             content_moderator: Content moderation system
+            max_batch_size: Maximum number of images to generate in one batch (default: 4, optimized for L40S)
         """
         self.image_pipeline = flux_pipeline  # Rename internally
         self.trellis_pipeline = trellis_pipeline
         self.reward_model = reward_model
         self.content_moderator = content_moderator
-        
+
         # Default generation parameters
         self.default_guidance_scale = 0.0
         self.default_num_inference_steps = 4
         self.default_height = 512
         self.default_width = 512
         self.default_max_sequence_length = 256
+        self.max_batch_size = max_batch_size  # Configurable batch size limit
     
     def set_models(self, flux_pipeline=None, trellis_pipeline=None, reward_model=None, content_moderator=None):
         """
@@ -74,50 +76,51 @@ class GenerationPipeline:
         if content_moderator is not None:
             self.content_moderator = content_moderator
     
-    def _create_enhanced_prompt(self, base_prompt: str) -> str:
+    def _create_enhanced_prompt(self, base_prompt: str, custom_suffix: Optional[str] = None) -> str:
         """
         Enhance the user prompt with 3D printing optimizations.
-        
+
         Args:
             base_prompt: Original user prompt
-            
+            custom_suffix: Optional custom suffix to append (uses default if None)
+
         Returns:
             str: Enhanced prompt optimized for 3D printing
         """
-        # prompt_suffix = (
-        #     ". A safe-for-work, G-rated, family-friendly depiction. "
-        #     "ZBrush digital sculpt, stylized 3D model. Single Object on neutral background."
-        #     "Solid, contiguous mesh, optimized for 3D printing with clean geometry and no fragile parts. "
-        # )
-        prompt_suffix = " Render of high quality 3D model on neutral background. Solid, contiguous mesh, optimized for 3D printing."
-        return base_prompt + prompt_suffix
+        # Default suffix for 3D printing optimization
+        if custom_suffix is None:
+            custom_suffix = " Render of high quality 3D model on neutral background. Solid, contiguous mesh, optimized for 3D printing."
+
+        return base_prompt + custom_suffix
     
     def _generate_seed(self, base_seed: Optional[int] = None) -> int:
         """
         Generate a random seed for reproducible results.
-        
+
         Args:
             base_seed: Optional base seed for reproducibility
-            
+
         Returns:
-            int: Generated seed
+            int: Generated seed (returns base_seed directly if provided)
         """
         if base_seed is not None and base_seed > 0:
-            random.seed(base_seed)
+            return base_seed  # Use seed directly for reproducibility
         return random.randint(0, 999999)
     
-    def generate_images(self, 
-                       prompt: str, 
-                       num_images: int = 4, 
+    def generate_images(self,
+                       prompt: str,
+                       num_images: int = 4,
                        base_seed: Optional[int] = None,
                        guidance_scale: Optional[float] = None,
                        num_inference_steps: Optional[int] = None,
                        height: int = 512,
                        width: int = 512,
-                       max_sequence_length: int = 256) -> List[Image.Image]:
+                       max_sequence_length: int = 256,
+                       negative_prompt: Optional[str] = None,
+                       prompt_suffix: Optional[str] = None) -> List[Image.Image]:
         """
-        Generate images using the FLUX pipeline.
-        
+        Generate images using the image generation pipeline (FLUX, Gemini, or Qwen).
+
         Args:
             prompt: Text description of desired object
             num_images: Number of images to generate
@@ -127,38 +130,41 @@ class GenerationPipeline:
             height: Image height
             width: Image width
             max_sequence_length: Maximum sequence length
-            
+            negative_prompt: Negative prompt (Qwen-specific, ignored by FLUX/Gemini)
+            prompt_suffix: Custom prompt suffix for 3D printing optimization (uses default if None)
+
         Returns:
             List of generated PIL Images
         """
         if self.image_pipeline is None:
-            raise ValueError("FLUX pipeline not loaded")
-        
+            raise ValueError("Image pipeline not loaded")
+
         # Generate seed
         actual_seed = self._generate_seed(base_seed)
         print(f"🎨 Generating images with seed: {actual_seed}")
-        
+
         # Use provided parameters or defaults
         guidance_scale = guidance_scale if guidance_scale is not None else self.default_guidance_scale
         num_inference_steps = num_inference_steps if num_inference_steps is not None else self.default_num_inference_steps
-        
-        # Limit batch size to prevent memory issues
-        batch_size = min(num_images, 8)
+
+        # Limit batch size to prevent memory issues (configurable, default: 4)
+        batch_size = min(num_images, self.max_batch_size)
         if num_images > batch_size:
             print(f"⚠️ Reducing number of images to {batch_size} due to batch size limit.")
             num_images = batch_size
-        
-        # Enhance prompt for 3D printing
-        enhanced_prompt = self._create_enhanced_prompt(prompt)
-        
+
+        # Enhance prompt for 3D printing with custom or default suffix
+        enhanced_prompt = self._create_enhanced_prompt(prompt, custom_suffix=prompt_suffix)
+
         # Generate images
         images = self.image_pipeline(
             [enhanced_prompt] * batch_size,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
-            height=height, 
+            height=height,
             width=width,
             max_sequence_length=max_sequence_length,
+            negative_prompt=negative_prompt,  # Qwen will use it, others will ignore
             generator=torch.Generator("cpu").manual_seed(actual_seed)
         ).images
         
@@ -180,18 +186,19 @@ class GenerationPipeline:
         print(f"✅ Generated {len(filtered_images)} filtered images")
         return filtered_images
 
-    def generate_images_return_raw(self, 
-                       prompt: str, 
-                       num_images: int = 4, 
+    def generate_images_return_raw(self,
+                       prompt: str,
+                       num_images: int = 4,
                        base_seed: Optional[int] = None,
                        guidance_scale: Optional[float] = None,
                        num_inference_steps: Optional[int] = None,
                        height: int = 512,
                        width: int = 512,
-                       max_sequence_length: int = 256) -> List[Image.Image]:
+                       max_sequence_length: int = 256,
+                       negative_prompt: Optional[str] = None) -> List[Image.Image]:
         """
-        Generate images using the FLUX pipeline.
-        
+        Generate images using the image generation pipeline (returns both filtered and raw).
+
         Args:
             prompt: Text description of desired object
             num_images: Number of images to generate
@@ -201,26 +208,27 @@ class GenerationPipeline:
             height: Image height
             width: Image width
             max_sequence_length: Maximum sequence length
-            
+            negative_prompt: Negative prompt (Qwen-specific, ignored by FLUX/Gemini)
+
         Returns:
-            List of generated PIL Images
+            Tuple of (filtered_images, raw_images)
         """
         if self.image_pipeline is None:
-            raise ValueError("FLUX pipeline not loaded")
-        
+            raise ValueError("Image pipeline not loaded")
+
         # Generate seed
         actual_seed = self._generate_seed(base_seed)
-        
+
         # Use provided parameters or defaults
         guidance_scale = guidance_scale if guidance_scale is not None else self.default_guidance_scale
         num_inference_steps = num_inference_steps if num_inference_steps is not None else self.default_num_inference_steps
-        
-        # Limit batch size to prevent memory issues
-        batch_size = min(num_images, 8)
+
+        # Limit batch size to prevent memory issues (configurable, default: 4)
+        batch_size = min(num_images, self.max_batch_size)
         if num_images > batch_size:
             print(f"⚠️ Reducing number of images to {batch_size} due to batch size limit.")
             num_images = batch_size
-        
+
         # Enhance prompt for 3D printing
         # enhanced_prompt = self._create_enhanced_prompt(prompt)
         enhanced_prompt = prompt 
@@ -230,9 +238,10 @@ class GenerationPipeline:
             [enhanced_prompt] * batch_size,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
-            height=height, 
+            height=height,
             width=width,
             max_sequence_length=max_sequence_length,
+            negative_prompt=negative_prompt,  # Qwen will use it, others will ignore
             generator=torch.Generator("cpu").manual_seed(actual_seed)
         ).images
         
@@ -425,13 +434,18 @@ _global_generation_pipeline = None
 def get_generation_pipeline() -> GenerationPipeline:
     """
     Get the global GenerationPipeline instance.
-    
+
     Returns:
         GenerationPipeline: The global pipeline instance
+
+    Note:
+        Reads MAX_BATCH_SIZE environment variable if set (default: 4)
     """
     global _global_generation_pipeline
     if _global_generation_pipeline is None:
-        _global_generation_pipeline = GenerationPipeline()
+        # Read max batch size from environment variable (default: 4)
+        max_batch_size = int(os.environ.get("MAX_BATCH_SIZE", "4"))
+        _global_generation_pipeline = GenerationPipeline(max_batch_size=max_batch_size)
     return _global_generation_pipeline
 
 

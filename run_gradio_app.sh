@@ -1,6 +1,6 @@
-export PATH=/mnt/damian/miniconda3/bin:$PATH 
+export PATH=/mnt/damian/miniconda3/bin:$PATH
 eval "$(conda shell.bash hook)"
-conda activate trellis_new
+conda activate trellis_gemma
 
 export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=false
@@ -13,24 +13,25 @@ export USE_MULTI_GPU=false
 # To enable quality ranking:
 export ENABLE_REWARD_MODEL=false
 
-# TRELLIS 
+# TRELLIS
 export TRELLIS_MODEL_ID="JeffreyXiang/TRELLIS-image-large"
 # cpu offload if we have less than 24GB of VRAM
 export ENABLE_TRELLIS_CPU_OFFLOAD=true
 # Gaussian Rendering has issues on the A30 Servers with 24GB of VRAM
 # Deactivate Gaussian Rendering on A30 Servers, on L40s you can activate it
-# It also has issues with multi GPU setup right now. So if you use multiple gpus deactivate it 
+# It also has issues with multi GPU setup right now. So if you use multiple gpus deactivate it
 export USE_GAUSSIAN_RENDERING=true
 
-# Image Model 
+# Image Model
 export IMAGE_MODEL=qwen # flux, gemini, qwen
-# FLUX MODEL 
-# cpu offload if we have less than 24GB of VRAM 
-export ENABLE_FLUX_CPU_OFFLOAD=true 
-# Compilation 
-# Needs more time at start but faster inference 
-export COMPILE_FLUX_OPTIMIZATION=false 
-export USE_FLUX_DEV=true
+export ENABLE_IMAGE_CPU_OFFLOAD=true
+export QWEN_LOAD_IN_8BIT=true  # Default, reduces VRAM
+export FAST_IMAGE_SAMPLING=true
 
-streamlit run streamlit-app.py --server.fileWatcherType none
+# Flux Specific
+# Needs more time at start but faster inference
+# export COMPILE_FLUX_OPTIMIZATION=false
+# export USE_FLUX_DEV=true
+
+python gradio-app.py
 

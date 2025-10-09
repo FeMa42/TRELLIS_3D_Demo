@@ -62,6 +62,7 @@ class GeminiImagePipeline:
         width: int = 512,
         num_inference_steps: int = 4,  # Ignored for Gemini
         max_sequence_length: int = 256,  # Ignored for Gemini
+        negative_prompt: Optional[str] = None,  # Ignored for Gemini
         generator=None  # Seed handled differently in Gemini
     ):
         """
@@ -74,6 +75,7 @@ class GeminiImagePipeline:
             width: Image width in pixels
             num_inference_steps: Ignored (Gemini handles internally)
             max_sequence_length: Ignored (Gemini handles internally)
+            negative_prompt: Ignored (Gemini doesn't support negative prompts, for compatibility with Qwen)
             generator: Ignored (Gemini doesn't support seed)
 
         Returns:
