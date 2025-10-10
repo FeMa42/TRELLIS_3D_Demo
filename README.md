@@ -4,6 +4,8 @@ This is an adaption of the original [TRELLIS repository](https://github.com/micr
 
 You only need to install the dependencies in the requirements.txt file. You can install them with the following command:
 ```sh
+conda create -n trellis python=3.10 -y
+conda activate trellis
 pip install -r requirements.txt
 ```
 I tested it inside a conda environment with python 3.10 on Ubuntu 22.04 LTS with Nvidia Driver Version: 570.172.08 for CUDA 12.8. 

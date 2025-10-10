@@ -1,6 +1,6 @@
 export PATH=/mnt/damian/miniconda3/bin:$PATH 
 eval "$(conda shell.bash hook)"
-conda activate trellis_gemma
+conda activate trellis
 
 export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=false

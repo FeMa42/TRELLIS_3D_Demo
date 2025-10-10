@@ -1,8 +1,6 @@
 # Activate your conda environment and set environment variables
 # Adjust the paths and variables as needed
-export PATH=/mnt/damian/miniconda3/bin:$PATH
-eval "$(conda shell.bash hook)"
-conda activate trellis_gemma
+conda activate trellis
 
 export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=false
@@ -18,7 +16,7 @@ export ENABLE_REWARD_MODEL=false
 # TRELLIS
 # I still have the model from "JeffreyXiang/TRELLIS-image-large"
 # more recently the models have been moved to the Microsoft org. If you get an error change the model id to "microsoft/TRELLIS-image-large"
-export TRELLIS_MODEL_ID="JeffreyXiang/TRELLIS-image-large"
+export TRELLIS_MODEL_ID="microsoft/TRELLIS-image-large"
 # cpu offload if we have less than 24GB of VRAM
 export ENABLE_TRELLIS_CPU_OFFLOAD=true
 # Gaussian Rendering has issues on the A30 Servers with 24GB of VRAM
