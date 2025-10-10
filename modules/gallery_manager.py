@@ -29,23 +29,20 @@ class GalleryManager:
     Manages gallery items, database operations, and file handling.
     """
     
-    def __init__(self, 
+    def __init__(self,
                  gallery_dir: str = "gallery",
-                 db_file: str = "gallery.db", 
-                 counter_file: str = "file_counter.txt",
+                 db_file: str = "gallery.db",
                  output_dir: str = "output"):
         """
         Initialize the GalleryManager.
-        
+
         Args:
             gallery_dir: Directory to store gallery files
             db_file: SQLite database file path
-            counter_file: File to store the print counter
             output_dir: Directory for output files
         """
         self.gallery_dir = gallery_dir
         self.db_file = db_file
-        self.counter_file = counter_file
         self.output_dir = output_dir
         
         # Create necessary directories
@@ -310,56 +307,68 @@ class GalleryManager:
             conn.close()
     
     # Print Counter Management
+    def _get_max_print_number(self) -> int:
+        """
+        Get the highest print number from the database.
+
+        Returns:
+            int: Maximum print number, or 0 if no items exist
+        """
+        conn = sqlite3.connect(self.db_file)
+        c = conn.cursor()
+
+        try:
+            c.execute('SELECT MAX(CAST(print_number AS INTEGER)) FROM gallery')
+            max_num = c.fetchone()[0]
+            return max_num if max_num is not None else 0
+        except Exception as e:
+            print(f"⚠️ Warning: Could not query max print number: {e}")
+            return 0
+        finally:
+            conn.close()
+
     def load_counter(self) -> int:
         """
-        Load the current print counter value.
-        
+        Load the current print counter value from database.
+
+        Deprecated: This method is kept for backward compatibility.
+        The counter is now derived from the database.
+
         Returns:
-            int: Current counter value
+            int: Current counter value (max print number + 1)
         """
-        if os.path.exists(self.counter_file):
-            try:
-                with open(self.counter_file, "r") as f:
-                    return int(f.read().strip())
-            except Exception as e:
-                print(f"⚠️ Warning: Could not read counter file: {e}")
-                return 1
-        return 1
-    
+        return self._get_max_print_number() + 1
+
     def save_counter(self, value: int) -> None:
         """
         Save the print counter value.
-        
+
+        Deprecated: This method is kept for backward compatibility but does nothing.
+        The counter is now derived from the database automatically.
+
         Args:
-            value: Counter value to save
+            value: Counter value (ignored)
         """
-        try:
-            with open(self.counter_file, "w") as f:
-                f.write(str(value))
-        except Exception as e:
-            print(f"❌ Error saving counter: {e}")
-    
+        pass  # No-op: counter is derived from database
+
     def get_next_print_number(self) -> str:
         """
-        Get the next print number without incrementing the counter.
-        
+        Get the next print number without incrementing.
+
         Returns:
             str: Next print number formatted as 4-digit string
         """
-        count = self.load_counter()
-        return f"{count:04d}"
-    
+        next_num = self._get_max_print_number() + 1
+        return f"{next_num:04d}"
+
     def increment_counter(self) -> str:
         """
-        Increment the print counter and return the new number.
-        
+        Get the next print number (database-driven, no file increment needed).
+
         Returns:
-            str: New print number formatted as 4-digit string
+            str: Next print number formatted as 4-digit string
         """
-        count = self.load_counter()
-        new_count = count + 1
-        self.save_counter(new_count)
-        return f"{count:04d}"  # Return the number that was just used
+        return self.get_next_print_number()
 
 
 # Global instance for easy access

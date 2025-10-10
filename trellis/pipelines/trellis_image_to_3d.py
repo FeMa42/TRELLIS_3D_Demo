@@ -4,13 +4,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from tqdm import tqdm
+from easydict import EasyDict as edict
 from torchvision import transforms
 from PIL import Image
 import rembg
 from .base import Pipeline
 from . import samplers
 from ..modules import sparse as sp
-import gc
+from ..representations import Gaussian, Strivec, MeshExtractResult
 
 
 class TrellisImageTo3DPipeline(Pipeline):
@@ -122,7 +124,7 @@ class TrellisImageTo3DPipeline(Pipeline):
             return self._offload_manager.execution_device
         else:
             return self.device
-    
+
     @torch.no_grad()
     def encode_image(self, image: Union[torch.Tensor, list[Image.Image]]) -> torch.Tensor:
         """
@@ -136,7 +138,7 @@ class TrellisImageTo3DPipeline(Pipeline):
         """
         # Get the appropriate device for tensor operations
         target_device = self._get_execution_device()
-        
+
         if isinstance(image, torch.Tensor):
             assert image.ndim == 4, "Image tensor should be batched (B, C, H, W)"
             image = image.to(target_device)
@@ -148,7 +150,7 @@ class TrellisImageTo3DPipeline(Pipeline):
             image = torch.stack(image).to(target_device)
         else:
             raise ValueError(f"Unsupported type of image: {type(image)}")
-        
+
         image = self.image_cond_model_transform(image).to(target_device)
         features = self.models['image_cond_model'](image, is_training=True)['x_prenorm']
         patchtokens = F.layer_norm(features, features.shape[-1:])
@@ -200,7 +202,7 @@ class TrellisImageTo3DPipeline(Pipeline):
         
         # Decode occupancy latent
         decoder = self.models['sparse_structure_decoder']
-        coords = torch.argwhere(decoder(z_s)>0)[:, [0, 2, 3, 4]].to(torch.int32).to(self._get_execution_device())
+        coords = torch.argwhere(decoder(z_s)>0)[:, [0, 2, 3, 4]].int()
 
         return coords
 
@@ -262,7 +264,7 @@ class TrellisImageTo3DPipeline(Pipeline):
         slat = slat * std + mean
         
         return slat
-    
+
     def enable_model_cpu_offload(self, execution_device: Optional[Union[str, torch.device]] = None) -> None:
         """
         Enable stage-aware CPU offloading optimized for image-to-3D pipeline.
@@ -290,68 +292,64 @@ class TrellisImageTo3DPipeline(Pipeline):
         preprocess_image: bool = True,
     ) -> dict:
         """
-        Run the pipeline with optional CPU offloading optimization.
+        Run the pipeline.
 
         Args:
             image (Image.Image): The image prompt.
             num_samples (int): The number of samples to generate.
-            seed (int): The random seed.
             sparse_structure_sampler_params (dict): Additional parameters for the sparse structure sampler.
             slat_sampler_params (dict): Additional parameters for the structured latent sampler.
-            formats (List[str]): The formats to decode the structured latent to.
             preprocess_image (bool): Whether to preprocess the image.
         """
         if preprocess_image:
             image = self.preprocess_image(image)
         
         torch.manual_seed(seed)
-        
-        # Use stage-aware CPU offloading if enabled
+
         if self._cpu_offload_enabled and self._offload_manager is not None:
             return self._run_with_cpu_offload(image, num_samples, sparse_structure_sampler_params, slat_sampler_params, formats)
         else:
-            # Standard execution without offloading
             cond = self.get_cond([image])
             coords = self.sample_sparse_structure(cond, num_samples, sparse_structure_sampler_params)
             slat = self.sample_slat(cond, coords, slat_sampler_params)
             return self.decode_slat(slat, formats)
-    
+
     def _run_with_cpu_offload(
-        self,
-        image: Image.Image,
-        num_samples: int,
-        sparse_structure_sampler_params: dict,
-        slat_sampler_params: dict,
-        formats: List[str]
-    ) -> dict:
-        """Execute pipeline with stage-aware CPU offloading for optimal memory usage."""
-        
-        # Stage 1: Image encoding
-        with self._offload_manager.stage_context("image_encoding", ["image_cond_model"]):
-            cond = self.get_cond([image])
-        
-        # Stage 2: Sparse structure generation and decoding 
-        with self._offload_manager.stage_context("sparse_structure", ["sparse_structure_flow_model", "sparse_structure_decoder"]):
-            coords = self.sample_sparse_structure(cond, num_samples, sparse_structure_sampler_params)
-        
-        # Stage 3: Structured latent generation
-        with self._offload_manager.stage_context("structured_latent", ["slat_flow_model"]):
-            slat = self.sample_slat(cond, coords, slat_sampler_params)
-        
-        # Stage 4: Final decoding (activate all decoders needed)
-        decoder_models = []
-        for fmt in formats:
-            if fmt == 'mesh':
-                decoder_models.append('slat_decoder_mesh')
-            elif fmt == 'gaussian':
-                decoder_models.append('slat_decoder_gs')
-            elif fmt == 'radiance_field':
-                decoder_models.append('slat_decoder_rf')
-        
-        with self._offload_manager.stage_context("final_decoding", decoder_models):
-            result = self.decode_slat(slat, formats)
-        
-        return result
+            self,
+            image: Image.Image,
+            num_samples: int,
+            sparse_structure_sampler_params: dict,
+            slat_sampler_params: dict,
+            formats: List[str]
+        ) -> dict:
+            """Execute pipeline with stage-aware CPU offloading for optimal memory usage."""
+            
+            # Stage 1: Image encoding
+            with self._offload_manager.stage_context("image_encoding", ["image_cond_model"]):
+                cond = self.get_cond([image])
+            
+            # Stage 2: Sparse structure generation and decoding 
+            with self._offload_manager.stage_context("sparse_structure", ["sparse_structure_flow_model", "sparse_structure_decoder"]):
+                coords = self.sample_sparse_structure(cond, num_samples, sparse_structure_sampler_params)
+            
+            # Stage 3: Structured latent generation
+            with self._offload_manager.stage_context("structured_latent", ["slat_flow_model"]):
+                slat = self.sample_slat(cond, coords, slat_sampler_params)
+            
+            # Stage 4: Final decoding (activate all decoders needed)
+            decoder_models = []
+            for fmt in formats:
+                if fmt == 'mesh':
+                    decoder_models.append('slat_decoder_mesh')
+                elif fmt == 'gaussian':
+                    decoder_models.append('slat_decoder_gs')
+                elif fmt == 'radiance_field':
+                    decoder_models.append('slat_decoder_rf')
+            
+            with self._offload_manager.stage_context("final_decoding", decoder_models):
+                result = self.decode_slat(slat, formats)
+            
+            return result
 
     @contextmanager
     def inject_sampler_multi_image(

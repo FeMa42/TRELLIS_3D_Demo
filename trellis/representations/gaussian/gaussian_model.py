@@ -143,8 +143,7 @@ class Gaussian:
         attributes = np.concatenate((xyz, normals, f_dc, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
-        # Save in ASCII format instead of binary for better compatibility
-        PlyData([el], text=True).write(path)
+        PlyData([el]).write(path)
 
     def load_ply(self, path, transform=[[1, 0, 0], [0, 0, -1], [0, 1, 0]]):
         plydata = PlyData.read(path)
@@ -184,9 +183,9 @@ class Gaussian:
         if transform is not None:
             transform = np.array(transform)
             xyz = np.matmul(xyz, transform)
-            rots = utils3d.numpy.quaternion_to_matrix(rots)
-            rots = np.matmul(rots, transform)
-            rots = utils3d.numpy.matrix_to_quaternion(rots)
+            rotation = utils3d.numpy.quaternion_to_matrix(rotation)
+            rotation = np.matmul(rotation, transform)
+            rotation = utils3d.numpy.matrix_to_quaternion(rotation)
             
         # convert to actual gaussian attributes
         xyz = torch.tensor(xyz, dtype=torch.float, device=self.device)
@@ -207,167 +206,4 @@ class Gaussian:
         self._opacity = self.inverse_opacity_activation(opacities) - self.opacity_bias
         self._scaling = self.inverse_scaling_activation(torch.sqrt(torch.square(scales) - self.mininum_kernel_size ** 2)) - self.scale_bias
         self._rotation = rots - self.rots_bias[None, :]
-
-    def save_splat(self, path, transform=[[1, 0, 0], [0, 0, -1], [0, 1, 0]], max_splats=50000):
-        """
-        Save Gaussian splat in standard .splat format.
         
-        The .splat format stores each Gaussian as 14 consecutive float32 values:
-        [x, y, z, scale_x, scale_y, scale_z, r, g, b, rot_w, rot_x, rot_y, rot_z, opacity]
-        
-        Key insights from TRELLIS:
-        - Positions are in normalized [-0.5, 0.5] space, need to be scaled
-        - Features are raw SH DC coefficients, need proper SH->RGB conversion
-        - Scales are already processed (get_scaling applies activations)
-        - Rotations are normalized quaternions
-        - Opacities are already processed (get_opacity applies sigmoid)
-        """
-        
-        # Get processed Gaussian parameters
-        xyz = self.get_xyz.detach().cpu().numpy()           # Already denormalized positions
-        scales = self.get_scaling.detach().cpu().numpy()    # Already processed scales  
-        rotations = self.get_rotation.detach().cpu().numpy() # Already normalized quaternions
-        opacities = self.get_opacity.detach().cpu().numpy() # Already processed opacities
-        
-        # Get raw SH features for color conversion
-        features = self.get_features.detach().cpu().numpy() # Raw SH coefficients
-        
-        # Filter out very small or transparent splats
-        if max_splats and len(xyz) > max_splats:
-            # Keep the most important splats based on size and opacity
-            importance = opacities.squeeze() * np.max(scales, axis=1)
-            keep_indices = np.argsort(importance)[-max_splats:]
-            xyz = xyz[keep_indices]
-            scales = scales[keep_indices]
-            rotations = rotations[keep_indices]
-            opacities = opacities[keep_indices]
-            features = features[keep_indices]
-        
-        # Convert SH DC coefficients to RGB colors
-        # TRELLIS stores features as [N, 1, 3] or [N, 3, 1] format
-        if features.shape[1] == 1 and features.shape[2] == 3:
-            # Shape: [N, 1, 3] - 1 SH coefficient per RGB channel
-            sh_dc = features[:, 0, :]  # [N, 3]
-        elif features.shape[1] == 3 and features.shape[2] == 1:
-            # Shape: [N, 3, 1] - 3 RGB channels, 1 SH coefficient each
-            sh_dc = features[:, :, 0]  # [N, 3]
-        else:
-            # Fallback for unexpected shapes
-            sh_dc = features.reshape(features.shape[0], 3)
-        
-        # Convert SH DC to RGB using the standard spherical harmonics formula
-        # SH DC coefficient corresponds to constant term: DC / (2 * sqrt(π)) + 0.5
-        # But TRELLIS seems to use a different encoding, so we need to experiment
-        
-        # Method 1: Direct sigmoid (common for neural networks)
-        colors = 1.0 / (1.0 + np.exp(-sh_dc))
-        
-        # Ensure colors are in valid [0,1] range
-        colors = np.clip(colors, 0.0, 1.0)
-        
-        # Apply coordinate transform if specified
-        if transform is not None:
-            transform = np.array(transform, dtype=np.float32)
-            xyz = np.matmul(xyz, transform.T)
-            
-            # Transform rotations properly
-            rotation_matrices = utils3d.numpy.quaternion_to_matrix(rotations)
-            rotation_matrices = np.matmul(transform, rotation_matrices)
-            rotations = utils3d.numpy.matrix_to_quaternion(rotation_matrices)
-        
-        # Ensure quaternions are normalized
-        quat_norms = np.linalg.norm(rotations, axis=1, keepdims=True)
-        rotations = rotations / (quat_norms + 1e-8)
-        
-        # Clamp all values to reasonable ranges
-        xyz = np.clip(xyz, -100.0, 100.0)
-        scales = np.clip(scales, 1e-6, 10.0)  # Prevent zero or huge scales
-        colors = np.clip(colors, 0.0, 1.0)
-        opacities = np.clip(opacities.squeeze(), 0.0, 1.0)
-        
-        # Pack data into .splat format
-        # Standard format: [x, y, z, scale_x, scale_y, scale_z, r, g, b, quat_w, quat_x, quat_y, quat_z, opacity]
-        num_splats = len(xyz)
-        splat_data = np.zeros((num_splats, 14), dtype=np.float32)
-        
-        splat_data[:, 0:3] = xyz.astype(np.float32)        # position (x, y, z)
-        splat_data[:, 3:6] = scales.astype(np.float32)     # scale (sx, sy, sz)
-        splat_data[:, 6:9] = colors.astype(np.float32)     # color (r, g, b)
-        splat_data[:, 9:13] = rotations.astype(np.float32) # quaternion (w, x, y, z)
-        splat_data[:, 13] = opacities.astype(np.float32)   # opacity
-        
-        # Write binary file
-        with open(path, 'wb') as f:
-            f.write(splat_data.tobytes())
-
-    def save_ply_gaussian_splatting(self, path, transform=[[1, 0, 0], [0, 0, -1], [0, 1, 0]], max_splats=50000):
-        """Save in standard Gaussian Splatting PLY format with proper filtering"""
-        
-        # Get and filter data (same as save_splat)
-        xyz = self.get_xyz.detach().cpu().numpy()
-        scales = self.get_scaling.detach().cpu().numpy()
-        rotations = self.get_rotation.detach().cpu().numpy()
-        opacities = self.get_opacity.detach().cpu().numpy().squeeze()
-        features = self.get_features.detach().cpu().numpy()
-        
-        # Filter tiny/invisible splats
-        min_scale = np.max(scales, axis=1)
-        valid_mask = (min_scale > 0.001) & (opacities > 0.01)
-        
-        xyz = xyz[valid_mask]
-        scales = scales[valid_mask]
-        rotations = rotations[valid_mask]
-        opacities = opacities[valid_mask]
-        features = features[valid_mask]
-        
-        # Limit count
-        if len(xyz) > max_splats:
-            importance = opacities * np.max(scales, axis=1)
-            indices = np.argsort(importance)[-max_splats:]
-            xyz = xyz[indices]
-            scales = scales[indices]
-            rotations = rotations[indices]
-            opacities = opacities[indices]
-            features = features[indices]
-        
-        # Apply transform
-        if transform is not None:
-            transform = np.array(transform)
-            xyz = np.matmul(xyz, transform.T)
-            rotation_matrices = utils3d.numpy.quaternion_to_matrix(rotations)
-            rotation_matrices = np.matmul(transform, rotation_matrices)
-            rotations = utils3d.numpy.matrix_to_quaternion(rotation_matrices)
-        
-        # Store raw features for PLY (no color conversion)
-        if features.shape[1] == 1 and features.shape[2] == 3:
-            features_rgb = features[:, 0, :]  # [N, 3]
-        elif features.shape[1] == 3 and features.shape[2] == 1:
-            features_rgb = features[:, :, 0]  # [N, 3]
-        else:
-            features_rgb = np.zeros((len(xyz), 3))
-        
-        # Create PLY data
-        vertex_data = []
-        for i in range(len(xyz)):
-            vertex = [
-                xyz[i, 0], xyz[i, 1], xyz[i, 2],  # position
-                0.0, 0.0, 0.0,                     # normals (unused)
-                features_rgb[i, 0], features_rgb[i, 1], features_rgb[i, 2],  # SH DC
-                opacities[i],                      # opacity
-                scales[i, 0], scales[i, 1], scales[i, 2],  # scales
-                rotations[i, 0], rotations[i, 1], rotations[i, 2], rotations[i, 3]  # quaternion
-            ]
-            vertex_data.append(tuple(vertex))
-        
-        # PLY properties
-        properties = [
-            ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-            ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
-            ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4'),
-            ('opacity', 'f4'),
-            ('scale_0', 'f4'), ('scale_1', 'f4'), ('scale_2', 'f4'),
-            ('rot_0', 'f4'), ('rot_1', 'f4'), ('rot_2', 'f4'), ('rot_3', 'f4'),
-        ]
-        
-        vertex_element = PlyElement.describe(np.array(vertex_data, dtype=properties), 'vertex')
-        PlyData([vertex_element], text=True).write(path)

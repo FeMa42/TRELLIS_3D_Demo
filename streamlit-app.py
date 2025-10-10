@@ -6,9 +6,9 @@ st.set_page_config(page_title="Text-to-3D Generator", page_icon="🎨", layout="
 
 import streamlit.components.v1 as components
 import torch
-import gc 
+import gc
 from PIL import Image
-import modules.print_pipeline as print_pipeline
+from modules.simple_stl_converter import convert_glb_to_stl
 from modules.content_moderation import get_content_moderator
 from modules.gallery_manager import get_gallery_manager
 from modules.three_d_viewer import create_3d_viewer_html
@@ -289,8 +289,9 @@ def prepare_3d_model_for_printing():
     with open(glb_output, "wb") as f:
         with open(st.session_state.glb_path, "rb") as f_in:
             f.write(f_in.read())
-    
-    stl_filepath = print_pipeline.run_with_file(glb_output, file_number, output_folder=output_dir)
+
+    # Generate STL (simple conversion without base plate)
+    stl_filepath = convert_glb_to_stl(glb_output, file_number, output_folder=output_dir)
     
     # Store the STL file path in session state for download
     st.session_state.stl_file_path = stl_filepath

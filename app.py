@@ -1,8 +1,10 @@
 import gradio as gr
+# import spaces
 from gradio_litmodel3d import LitModel3D
 
 import os
 import shutil
+os.environ['SPCONV_ALGO'] = 'native'
 from typing import *
 import torch
 import numpy as np
@@ -31,13 +33,17 @@ def end_session(req: gr.Request):
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
-    Preprocess the input image.
+    Preprocess the input image for 3D generation.
+    
+    This function is called when a user uploads an image or selects an example.
+    It applies background removal and other preprocessing steps necessary for
+    optimal 3D model generation.
 
     Args:
-        image (Image.Image): The input image.
+        image (Image.Image): The input image from the user
 
     Returns:
-        Image.Image: The preprocessed image.
+        Image.Image: The preprocessed image ready for 3D generation
     """
     processed_image = pipeline.preprocess_image(image)
     return processed_image
@@ -45,13 +51,16 @@ def preprocess_image(image: Image.Image) -> Image.Image:
 
 def preprocess_images(images: List[Tuple[Image.Image, str]]) -> List[Image.Image]:
     """
-    Preprocess a list of input images.
+    Preprocess a list of input images for multi-image 3D generation.
+    
+    This function is called when users upload multiple images in the gallery.
+    It processes each image to prepare them for the multi-image 3D generation pipeline.
     
     Args:
-        images (List[Tuple[Image.Image, str]]): The input images.
+        images (List[Tuple[Image.Image, str]]): The input images from the gallery
         
     Returns:
-        List[Image.Image]: The preprocessed images.
+        List[Image.Image]: The preprocessed images ready for 3D generation
     """
     images = [image[0] for image in images]
     processed_images = [pipeline.preprocess_image(image) for image in images]
@@ -100,12 +109,23 @@ def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
 
 def get_seed(randomize_seed: bool, seed: int) -> int:
     """
-    Get the random seed.
+    Get the random seed for generation.
+    
+    This function is called by the generate button to determine whether to use
+    a random seed or the user-specified seed value.
+    
+    Args:
+        randomize_seed (bool): Whether to generate a random seed
+        seed (int): The user-specified seed value
+        
+    Returns:
+        int: The seed to use for generation
     """
     return np.random.randint(0, MAX_SEED) if randomize_seed else seed
 
 
-def image_to_3d(
+# @spaces.GPU(duration=120)
+def generate_and_extract_glb(
     image: Image.Image,
     multiimages: List[Tuple[Image.Image, str]],
     is_multiimage: bool,
@@ -115,10 +135,12 @@ def image_to_3d(
     slat_guidance_strength: float,
     slat_sampling_steps: int,
     multiimage_algo: Literal["multidiffusion", "stochastic"],
+    mesh_simplify: float,
+    texture_size: int,
     req: gr.Request,
-) -> Tuple[dict, str]:
+) -> Tuple[dict, str, str, str]:
     """
-    Convert an image to a 3D model.
+    Convert an image to a 3D model and extract GLB file.
 
     Args:
         image (Image.Image): The input image.
@@ -130,12 +152,18 @@ def image_to_3d(
         slat_guidance_strength (float): The guidance strength for structured latent generation.
         slat_sampling_steps (int): The number of sampling steps for structured latent generation.
         multiimage_algo (Literal["multidiffusion", "stochastic"]): The algorithm for multi-image generation.
+        mesh_simplify (float): The mesh simplification factor.
+        texture_size (int): The texture resolution.
 
     Returns:
         dict: The information of the generated 3D model.
         str: The path to the video of the 3D model.
+        str: The path to the extracted GLB file.
+        str: The path to the extracted GLB file (for download).
     """
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
+    
+    # Generate 3D model
     if not is_multiimage:
         outputs = pipeline.run(
             image,
@@ -167,51 +195,43 @@ def image_to_3d(
             },
             mode=multiimage_algo,
         )
+    
+    # Render video
     video = render_utils.render_video(outputs['gaussian'][0], num_frames=120)['color']
     video_geo = render_utils.render_video(outputs['mesh'][0], num_frames=120)['normal']
     video = [np.concatenate([video[i], video_geo[i]], axis=1) for i in range(len(video))]
     video_path = os.path.join(user_dir, 'sample.mp4')
     imageio.mimsave(video_path, video, fps=15)
-    state = pack_state(outputs['gaussian'][0], outputs['mesh'][0])
-    torch.cuda.empty_cache()
-    return state, video_path
-
-
-def extract_glb(
-    state: dict,
-    mesh_simplify: float,
-    texture_size: int,
-    req: gr.Request,
-) -> Tuple[str, str]:
-    """
-    Extract a GLB file from the 3D model.
-
-    Args:
-        state (dict): The state of the generated 3D model.
-        mesh_simplify (float): The mesh simplification factor.
-        texture_size (int): The texture resolution.
-
-    Returns:
-        str: The path to the extracted GLB file.
-    """
-    user_dir = os.path.join(TMP_DIR, str(req.session_hash))
-    gs, mesh = unpack_state(state)
+    
+    # Extract GLB
+    gs = outputs['gaussian'][0]
+    mesh = outputs['mesh'][0]
     glb = postprocessing_utils.to_glb(gs, mesh, simplify=mesh_simplify, texture_size=texture_size, verbose=False)
     glb_path = os.path.join(user_dir, 'sample.glb')
     glb.export(glb_path)
+    
+    # Pack state for optional Gaussian extraction
+    state = pack_state(gs, mesh)
+    
     torch.cuda.empty_cache()
-    return glb_path, glb_path
+    return state, video_path, glb_path, glb_path
 
 
+# @spaces.GPU
 def extract_gaussian(state: dict, req: gr.Request) -> Tuple[str, str]:
     """
-    Extract a Gaussian file from the 3D model.
+    Extract a Gaussian splatting file from the generated 3D model.
+    
+    This function is called when the user clicks "Extract Gaussian" button.
+    It converts the 3D model state into a .ply file format containing
+    Gaussian splatting data for advanced 3D applications.
 
     Args:
-        state (dict): The state of the generated 3D model.
+        state (dict): The state of the generated 3D model containing Gaussian data
+        req (gr.Request): Gradio request object for session management
 
     Returns:
-        str: The path to the extracted Gaussian file.
+        Tuple[str, str]: Paths to the extracted Gaussian file (for display and download)
     """
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     gs, _ = unpack_state(state)
@@ -237,7 +257,17 @@ def prepare_multi_example() -> List[Image.Image]:
 
 def split_image(image: Image.Image) -> List[Image.Image]:
     """
-    Split an image into multiple views.
+    Split a multi-view image into separate view images.
+    
+    This function is called when users select multi-image examples that contain
+    multiple views in a single concatenated image. It automatically splits them
+    based on alpha channel boundaries and preprocesses each view.
+    
+    Args:
+        image (Image.Image): A concatenated image containing multiple views
+        
+    Returns:
+        List[Image.Image]: List of individual preprocessed view images
     """
     image = np.array(image)
     alpha = image[..., 3]
@@ -253,8 +283,11 @@ def split_image(image: Image.Image) -> List[Image.Image]:
 with gr.Blocks(delete_cache=(600, 600)) as demo:
     gr.Markdown("""
     ## Image to 3D Asset with [TRELLIS](https://trellis3d.github.io/)
-    * Upload an image and click "Generate" to create a 3D asset. If the image has alpha channel, it be used as the mask. Otherwise, we use `rembg` to remove the background.
-    * If you find the generated 3D asset satisfactory, click "Extract GLB" to extract the GLB file and download it.
+    * Upload an image and click "Generate & Extract GLB" to create a 3D asset and automatically extract the GLB file.
+    * If you want the Gaussian file as well, click "Extract Gaussian" after generation.
+    * If the image has alpha channel, it will be used as the mask. Otherwise, we use `rembg` to remove the background.
+    
+    ✨New: 1) Experimental multi-image support. 2) Gaussian file extraction.
     """)
     
     with gr.Row():
@@ -282,16 +315,13 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                     slat_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=3.0, step=0.1)
                     slat_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
                 multiimage_algo = gr.Radio(["stochastic", "multidiffusion"], label="Multi-image Algorithm", value="stochastic")
-
-            generate_btn = gr.Button("Generate")
             
             with gr.Accordion(label="GLB Extraction Settings", open=False):
                 mesh_simplify = gr.Slider(0.9, 0.98, label="Simplify", value=0.95, step=0.01)
                 texture_size = gr.Slider(512, 2048, label="Texture Size", value=1024, step=512)
-            
-            with gr.Row():
-                extract_glb_btn = gr.Button("Extract GLB", interactive=False)
-                extract_gs_btn = gr.Button("Extract Gaussian", interactive=False)
+
+            generate_btn = gr.Button("Generate & Extract GLB", variant="primary")
+            extract_gs_btn = gr.Button("Extract Gaussian", interactive=False)
             gr.Markdown("""
                         *NOTE: Gaussian file can be very large (~50MB), it will take a while to display and download.*
                         """)
@@ -359,26 +389,17 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         inputs=[randomize_seed, seed],
         outputs=[seed],
     ).then(
-        image_to_3d,
-        inputs=[image_prompt, multiimage_prompt, is_multiimage, seed, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps, multiimage_algo],
-        outputs=[output_buf, video_output],
+        generate_and_extract_glb,
+        inputs=[image_prompt, multiimage_prompt, is_multiimage, seed, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps, multiimage_algo, mesh_simplify, texture_size],
+        outputs=[output_buf, video_output, model_output, download_glb],
     ).then(
         lambda: tuple([gr.Button(interactive=True), gr.Button(interactive=True)]),
-        outputs=[extract_glb_btn, extract_gs_btn],
+        outputs=[extract_gs_btn, download_glb],
     )
 
     video_output.clear(
-        lambda: tuple([gr.Button(interactive=False), gr.Button(interactive=False)]),
-        outputs=[extract_glb_btn, extract_gs_btn],
-    )
-
-    extract_glb_btn.click(
-        extract_glb,
-        inputs=[output_buf, mesh_simplify, texture_size],
-        outputs=[model_output, download_glb],
-    ).then(
-        lambda: gr.Button(interactive=True),
-        outputs=[download_glb],
+        lambda: tuple([gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=False)]),
+        outputs=[extract_gs_btn, download_glb, download_gs],
     )
     
     extract_gs_btn.click(
@@ -391,8 +412,8 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     )
 
     model_output.clear(
-        lambda: gr.Button(interactive=False),
-        outputs=[download_glb],
+        lambda: tuple([gr.Button(interactive=False), gr.Button(interactive=False)]),
+        outputs=[download_glb, download_gs],
     )
     
 
@@ -400,4 +421,13 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
 if __name__ == "__main__":
     pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
     pipeline.cuda()
-    demo.launch()
+    try:
+        pipeline.preprocess_image(Image.fromarray(np.zeros((512, 512, 3), dtype=np.uint8)))    # Preload rembg
+    except:
+        pass
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        max_file_size="50mb"
+    ) # mcp_server=True

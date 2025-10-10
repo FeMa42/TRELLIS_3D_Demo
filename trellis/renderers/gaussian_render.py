@@ -154,9 +154,7 @@ class GaussianRenderer:
             "convert_SHs_python": False,
             "compute_cov3D_python": False,
             "scale_modifier": 1.0,
-            "debug": False,
-            "homogeneous_lighting": False,  # Enable homogeneous lighting by default
-            "lighting_strength": 0.5       # Control strength of lighting adjustment (0-1)
+            "debug": False
         })
         self.rendering_options = edict({
             "resolution": None,
@@ -176,7 +174,7 @@ class GaussianRenderer:
             colors_overwrite: torch.Tensor = None
         ) -> edict:
         """
-        Render the gausssian with improved homogeneous lighting.
+        Render the gausssian.
 
         Args:
             gaussian : gaussianmodule
@@ -221,122 +219,13 @@ class GaussianRenderer:
             "camera_center": camera
         })
 
-        # Original rendering
-        render_ret = render(camera_dict, gausssian, self.pipe, self.bg_color, 
-                        override_color=colors_overwrite, 
-                        scaling_modifier=self.pipe.scale_modifier)
-        
-        # Apply lighting homogenization as post-processing
-        rendered_image = render_ret['render']
-        
-        # Check if homogeneous lighting is enabled
-        enable_homogeneous_lighting = getattr(self.pipe, 'homogeneous_lighting', True)
-        lighting_strength = getattr(self.pipe, 'lighting_strength', 0.5)
-        
-        if enable_homogeneous_lighting and lighting_strength > 0:
-            # Create a mask where the object is rendered (non-background pixels)
-            mask = (rendered_image != self.bg_color.view(-1, 1, 1)).any(dim=0).float()
-            
-            if mask.sum() > 0:  # Only process if there are non-background pixels
-                # Compute the average intensity of the object
-                intensity = rendered_image.mean(dim=0, keepdim=True)
-                avg_intensity = (intensity * mask).sum() / (mask.sum() + 1e-8)
-                
-                # Balance the lighting by normalizing intensities
-                # This will make dark areas brighter and bright areas slightly darker
-                normalized = rendered_image.clone()
-                
-                # Calculate adjustment factor to balance lighting
-                # We want to bring everything closer to the average intensity
-                # but still maintain some of the original shading
-                adjustment = torch.ones_like(intensity) * avg_intensity / (intensity + 1e-8)
-                
-                # Limit adjustment range to preserve some shading variation
-                adjustment = torch.clamp(adjustment, 0.7, 1.5)
-                
-                # Apply the adjustment
-                normalized = rendered_image * (1.0 - lighting_strength) + \
-                            (rendered_image * adjustment) * lighting_strength
-                
-                # Only apply to the object (not background)
-                rendered_image = rendered_image * (1 - mask.unsqueeze(0)) + \
-                            normalized * mask.unsqueeze(0)
-                
-                # Ensure values stay in valid range
-                rendered_image = torch.clamp(rendered_image, 0.0, 1.0)
-                
-                # Update the render result
-                render_ret['render'] = rendered_image
+        # Render
+        render_ret = render(camera_dict, gausssian, self.pipe, self.bg_color, override_color=colors_overwrite, scaling_modifier=self.pipe.scale_modifier)
 
         if ssaa > 1:
-            render_ret.render = F.interpolate(render_ret.render[None], size=(resolution, resolution), 
-                                            mode='bilinear', align_corners=False, antialias=True).squeeze()
+            render_ret.render = F.interpolate(render_ret.render[None], size=(resolution, resolution), mode='bilinear', align_corners=False, antialias=True).squeeze()
             
         ret = edict({
             'color': render_ret['render']
         })
         return ret
-
-    # def render(
-    #         self,
-    #         gausssian: Gaussian,
-    #         extrinsics: torch.Tensor,
-    #         intrinsics: torch.Tensor,
-    #         colors_overwrite: torch.Tensor = None
-    #     ) -> edict:
-    #     """
-    #     Render the gausssian.
-
-    #     Args:
-    #         gaussian : gaussianmodule
-    #         extrinsics (torch.Tensor): (4, 4) camera extrinsics
-    #         intrinsics (torch.Tensor): (3, 3) camera intrinsics
-    #         colors_overwrite (torch.Tensor): (N, 3) override color
-
-    #     Returns:
-    #         edict containing:
-    #             color (torch.Tensor): (3, H, W) rendered color image
-    #     """
-    #     resolution = self.rendering_options["resolution"]
-    #     near = self.rendering_options["near"]
-    #     far = self.rendering_options["far"]
-    #     ssaa = self.rendering_options["ssaa"]
-        
-    #     if self.rendering_options["bg_color"] == 'random':
-    #         self.bg_color = torch.zeros(3, dtype=torch.float32, device="cuda")
-    #         if np.random.rand() < 0.5:
-    #             self.bg_color += 1
-    #     else:
-    #         self.bg_color = torch.tensor(self.rendering_options["bg_color"], dtype=torch.float32, device="cuda")
-
-    #     view = extrinsics
-    #     perspective = intrinsics_to_projection(intrinsics, near, far)
-    #     camera = torch.inverse(view)[:3, 3]
-    #     focalx = intrinsics[0, 0]
-    #     focaly = intrinsics[1, 1]
-    #     fovx = 2 * torch.atan(0.5 / focalx)
-    #     fovy = 2 * torch.atan(0.5 / focaly)
-            
-    #     camera_dict = edict({
-    #         "image_height": resolution * ssaa,
-    #         "image_width": resolution * ssaa,
-    #         "FoVx": fovx,
-    #         "FoVy": fovy,
-    #         "znear": near,
-    #         "zfar": far,
-    #         "world_view_transform": view.T.contiguous(),
-    #         "projection_matrix": perspective.T.contiguous(),
-    #         "full_proj_transform": (perspective @ view).T.contiguous(),
-    #         "camera_center": camera
-    #     })
-
-    #     # Render
-    #     render_ret = render(camera_dict, gausssian, self.pipe, self.bg_color, override_color=colors_overwrite, scaling_modifier=self.pipe.scale_modifier)
-
-    #     if ssaa > 1:
-    #         render_ret.render = F.interpolate(render_ret.render[None], size=(resolution, resolution), mode='bilinear', align_corners=False, antialias=True).squeeze()
-            
-    #     ret = edict({
-    #         'color': render_ret['render']
-    #     })
-    #     return ret

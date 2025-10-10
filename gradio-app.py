@@ -6,7 +6,7 @@ import gc
 import functools
 
 # Import modular components
-import modules.print_pipeline as print_pipeline
+from modules.simple_stl_converter import convert_glb_to_stl
 from modules.content_moderation import get_content_moderator
 from modules.gallery_manager import get_gallery_manager
 from modules.three_d_viewer import create_3d_viewer_html
@@ -103,6 +103,8 @@ def initialize_session(request: gr.Request):
             'current_prompt': "",
             'generation_step': 0,  # 0: initial, 1: images generated, 2: 3D generated
             'use_gaussian_rendering': get_gaussian_rendering_setting(),
+            'gallery_items_to_show': 20,  # Number of gallery items to display
+            'gallery_view_mode': 'Grid',  # Grid or Compact view
         }
         return "Session initialized"
     return "Session already exists"
@@ -373,8 +375,8 @@ def prepare_for_download(request: gr.Request):
         with open(session['glb_path'], "rb") as f_in:
             f.write(f_in.read())
 
-    # Generate STL
-    stl_filepath = print_pipeline.run_with_file(glb_output, file_number, output_folder=output_dir)
+    # Generate STL (simple conversion without base plate)
+    stl_filepath = convert_glb_to_stl(glb_output, file_number, output_folder=output_dir)
 
     # Update session
     session['stl_file_path'] = stl_filepath
@@ -556,22 +558,65 @@ with gr.Blocks(
         with gr.TabItem("🖼️ Gallery"):
             gr.Markdown("## 🖼️ Gallery & History")
 
+            # Controls row
             with gr.Row():
                 search_input = gr.Textbox(
                     label="🔍 Search by print number or prompt",
                     placeholder="e.g., 0001 or dragon",
                     scale=2
                 )
-                refresh_btn = gr.Button("🔄 Refresh Gallery")
-
-            gallery_grid = gr.Gallery(
-                label="Gallery",
-                columns=4,
-                height=600,
-                allow_preview=True
-            )
+                view_mode = gr.Radio(
+                    label="View Mode",
+                    choices=["Grid", "Compact"],
+                    value="Grid",
+                    scale=1
+                )
+                refresh_btn = gr.Button("🔄 Refresh", scale=0.5)
 
             gallery_status = gr.Markdown("Loading gallery...")
+
+            # Hidden state for tracking pagination
+            items_to_show_state = gr.State(20)
+
+            # Grid View (improved scrollable gallery with details)
+            with gr.Column(visible=True) as grid_view:
+                # Main gallery grid - now scrollable
+                gallery_grid_view = gr.Gallery(
+                    label="Gallery Items",
+                    columns=4,
+                    height="800px",  # Increased height for better scrolling
+                    allow_preview=True,
+                    object_fit="contain"
+                )
+
+                # Pagination control
+                with gr.Row():
+                    items_shown_text = gr.Markdown("Showing 0 items")
+                    load_more_btn = gr.Button("📥 Load More Items", visible=False, scale=0.5)
+
+                # Item details section (shown when item is selected)
+                with gr.Accordion("📋 Item Details", open=False, visible=False) as item_details_accordion:
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            detail_image = gr.Image(label="Preview", interactive=False)
+                        with gr.Column(scale=1):
+                            detail_info = gr.Markdown("No item selected")
+                            with gr.Row():
+                                detail_download_stl = gr.DownloadButton("📦 Download STL", visible=False)
+                                detail_download_glb = gr.DownloadButton("📥 Download GLB", visible=False)
+
+                    # 3D Viewer in details
+                    detail_viewer = iFrame(height=500, visible=False)
+
+            # Compact View (simple gallery without details)
+            with gr.Column(visible=False) as compact_view:
+                gallery_grid_compact = gr.Gallery(
+                    label="Gallery",
+                    columns=4,
+                    height="800px",
+                    allow_preview=True,
+                    object_fit="contain"
+                )
 
     # Footer
     gr.Markdown("---")
@@ -662,37 +707,151 @@ with gr.Blocks(
             outputs=[download_stl_btn, download_glb_btn, print_number_text]
         )
 
-    # Gallery refresh
-    def load_gallery(search=""):
+    # Gallery loading functions
+    def load_gallery_with_pagination(search="", items_to_show=20, view_mode="Grid"):
+        """Load gallery items with pagination support."""
         items = get_gallery_items(search)
-        if not items:
-            return [], "No items in gallery yet. Start creating to see them here!"
 
-        # Convert to gallery format: list of image paths
+        if not items:
+            status = "No items in gallery yet. Start creating to see them here!"
+            return (
+                [],  # gallery_grid_view
+                [],  # gallery_grid_compact
+                status,  # gallery_status
+                "Showing 0 items",  # items_shown_text
+                gr.update(visible=False),  # load_more_btn
+                gr.update(visible=(view_mode == "Grid")),  # grid_view
+                gr.update(visible=(view_mode == "Compact"))  # compact_view
+            )
+
+        # Limit items based on pagination
+        total_items = len(items)
+        items_to_display = items[:items_to_show]
+
+        # Convert to gallery format: list of (image_path, caption) tuples
         gallery_items = []
-        for item in items:
+        for item in items_to_display:
             image_path = item[3]  # image_path is at index 3
             if os.path.exists(image_path):
-                gallery_items.append((image_path, f"#{item[1]} - {item[2][:50]}"))
+                caption = f"#{item[1]} - {item[2][:50]}"
+                gallery_items.append((image_path, caption))
 
-        return gallery_items, f"Found {len(items)} items"
+        # Status and pagination info
+        status = f"Found {total_items} items"
+        items_shown = f"Showing {len(gallery_items)} of {total_items} items"
+        show_load_more = len(gallery_items) < total_items
 
+        return (
+            gallery_items,  # gallery_grid_view
+            gallery_items,  # gallery_grid_compact
+            status,  # gallery_status
+            items_shown,  # items_shown_text
+            gr.update(visible=show_load_more),  # load_more_btn
+            gr.update(visible=(view_mode == "Grid")),  # grid_view
+            gr.update(visible=(view_mode == "Compact"))  # compact_view
+        )
+
+    def handle_view_mode_change(view_mode):
+        """Toggle between Grid and Compact view modes."""
+        return (
+            gr.update(visible=(view_mode == "Grid")),  # grid_view
+            gr.update(visible=(view_mode == "Compact"))  # compact_view
+        )
+
+    def handle_load_more(search="", view_mode="Grid", current_items_to_show=20):
+        """Load more items when button is clicked."""
+        new_items_to_show = current_items_to_show + 20
+        result = load_gallery_with_pagination(search, new_items_to_show, view_mode)
+        # Add the new items count as last return value
+        return result + (new_items_to_show,)
+
+    def handle_gallery_item_select(evt: gr.SelectData, search=""):
+        """Handle item selection from gallery and show details."""
+        selected_index = evt.index
+
+        # Get all items to find the selected one
+        items = get_gallery_items(search)
+
+        if selected_index >= len(items):
+            return (
+                None,  # detail_image
+                "Error: Item not found",  # detail_info
+                None,  # detail_download_stl
+                None,  # detail_download_glb
+                gr.update(visible=False),  # detail_viewer
+                gr.update(visible=False, open=False)  # item_details_accordion
+            )
+
+        item = items[selected_index]
+        # item format: (id, print_number, prompt, image_path, stl_path, glb_path, video_path, created_at, metadata)
+
+        # Prepare detail info
+        detail_text = f"""
+**Print Number:** #{item[1]}
+
+**Prompt:** {item[2]}
+
+**Created:** {item[7]}
+"""
+
+        # Check if files exist
+        image_path = item[3] if item[3] and os.path.exists(item[3]) else None
+        stl_path = item[4] if item[4] and os.path.exists(item[4]) else None
+        glb_path = item[5] if item[5] and os.path.exists(item[5]) else None
+
+        # Generate 3D viewer if GLB exists
+        viewer_html = None
+        viewer_visible = False
+        if glb_path:
+            viewer_html = create_3d_viewer_html(glb_path, container_height="500px")
+            viewer_visible = True
+
+        return (
+            image_path,  # detail_image
+            detail_text,  # detail_info
+            stl_path if stl_path else gr.update(visible=False),  # detail_download_stl
+            glb_path if glb_path else gr.update(visible=False),  # detail_download_glb
+            gr.update(value=viewer_html, visible=True) if viewer_html else gr.update(visible=False),  # detail_viewer
+            gr.update(visible=True, open=True)  # item_details_accordion
+        )
+
+    # Gallery event handlers
     demo.load(
-        load_gallery,
+        lambda: load_gallery_with_pagination(search="", items_to_show=20, view_mode="Grid") + (20,),
         inputs=None,
-        outputs=[gallery_grid, gallery_status]
+        outputs=[gallery_grid_view, gallery_grid_compact, gallery_status, items_shown_text, load_more_btn, grid_view, compact_view, items_to_show_state]
     )
 
     refresh_btn.click(
-        load_gallery,
-        inputs=search_input,
-        outputs=[gallery_grid, gallery_status]
+        lambda search, view_mode: load_gallery_with_pagination(search, items_to_show=20, view_mode=view_mode) + (20,),
+        inputs=[search_input, view_mode],
+        outputs=[gallery_grid_view, gallery_grid_compact, gallery_status, items_shown_text, load_more_btn, grid_view, compact_view, items_to_show_state]
     )
 
     search_input.submit(
-        load_gallery,
-        inputs=search_input,
-        outputs=[gallery_grid, gallery_status]
+        lambda search, view_mode: load_gallery_with_pagination(search, items_to_show=20, view_mode=view_mode) + (20,),
+        inputs=[search_input, view_mode],
+        outputs=[gallery_grid_view, gallery_grid_compact, gallery_status, items_shown_text, load_more_btn, grid_view, compact_view, items_to_show_state]
+    )
+
+    view_mode.change(
+        handle_view_mode_change,
+        inputs=[view_mode],
+        outputs=[grid_view, compact_view]
+    )
+
+    # Gallery item selection for details
+    gallery_grid_view.select(
+        handle_gallery_item_select,
+        inputs=[search_input],
+        outputs=[detail_image, detail_info, detail_download_stl, detail_download_glb, detail_viewer, item_details_accordion]
+    )
+
+    # Load More button
+    load_more_btn.click(
+        handle_load_more,
+        inputs=[search_input, view_mode, items_to_show_state],
+        outputs=[gallery_grid_view, gallery_grid_compact, gallery_status, items_shown_text, load_more_btn, grid_view, compact_view, items_to_show_state]
     )
 
 
