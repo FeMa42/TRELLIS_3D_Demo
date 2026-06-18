@@ -19,6 +19,14 @@ os.environ['SPCONV_ALGO'] = 'native'  # verified-working spconv algo on Blackwel
 os.environ['OMP_NUM_THREADS'] = '4'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
+# Printability (Stage-1) -- default ON, env-overridable. See printability_optimization_3d.md.
+# Fills enclosed voids in the Stage-1 occupancy grid before Stage-2: ~15% less print
+# support material, detail-safe. setdefault so run_streamlit_app.sh / operators can override.
+os.environ.setdefault('TRELLIS_STAGE1_FILL_HOLES', 'true')
+# Optional Stage-1 DPO LoRA (off by default). To enable, point at the vendored checkpoint:
+#   export TRELLIS_STAGE1_LORA=checkpoints/printability_lora_r16
+os.environ.setdefault('TRELLIS_STAGE1_LORA', '')
+
 # Global dictionary for storing per-user instances
 user_instances = {}
 
