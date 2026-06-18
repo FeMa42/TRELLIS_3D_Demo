@@ -14,6 +14,28 @@ import trimesh
 import os
 
 
+def ensure_printable_mesh(mesh):
+    """Make a mesh manifold + watertight for FDM slicing.
+
+    Uses pymeshfix's full repair (removes degeneracies/self-intersections and
+    fills holes). Print-validity only; does not change the gross shape, so it
+    does not reduce slicer support volume.
+    """
+    import numpy as np
+    import trimesh
+    import pymeshfix
+
+    if mesh.is_watertight and mesh.is_winding_consistent:
+        return mesh
+    mfix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=np.float64),
+                             np.asarray(mesh.faces, dtype=np.int32))
+    mfix.repair(verbose=False)
+    out = trimesh.Trimesh(vertices=mfix.v, faces=mfix.f, process=True)
+    if not out.is_watertight:
+        out.fill_holes()
+    return out
+
+
 def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "output") -> str:
     """
     Convert GLB file to STL format without base plate or engraving.
@@ -49,6 +71,9 @@ def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "ou
         # Define output path
         output_filename = f"{file_number}.stl"
         output_path = os.path.join(output_folder, output_filename)
+
+        # Repair mesh to watertight/manifold before export
+        mesh = ensure_printable_mesh(mesh)
 
         # Export as STL
         print(f"💾 Exporting STL to: {output_path}")
