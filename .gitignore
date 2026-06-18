@@ -16,6 +16,8 @@ trellis/representations/mesh/flexicubes/
 CLAUDE.md
 .trees 
 hf_dataset_sync/
+run_text_app.sh
+
 
 # User-specific files
 *.rsuser

@@ -1,6 +1,6 @@
-export PATH=/mnt/damian/miniconda3/bin:$PATH 
+export PATH=/home/damian/miniconda3/bin:$PATH
 eval "$(conda shell.bash hook)"
-conda activate trellis
+conda activate trellis_blackwell
 
 export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=false
@@ -16,7 +16,7 @@ export ENABLE_REWARD_MODEL=false
 # TRELLIS 
 export TRELLIS_MODEL_ID="JeffreyXiang/TRELLIS-image-large"
 # cpu offload if we have less than 24GB of VRAM
-export ENABLE_TRELLIS_CPU_OFFLOAD=true
+export ENABLE_TRELLIS_CPU_OFFLOAD=false
 # Gaussian Rendering has issues on the A30 Servers with 24GB of VRAM
 # Deactivate Gaussian Rendering on A30 Servers, on L40s you can activate it
 # It also has issues with multi GPU setup right now. So if you use multiple gpus deactivate it 
@@ -27,9 +27,12 @@ export IMAGE_MODEL=qwen # flux, gemini, qwen
 # FLUX MODEL 
 # cpu offload if we have less than 24GB of VRAM 
 export USE_FLUX_DEV=true
-export IMAGE_MODEL=flux
-export ENABLE_IMAGE_CPU_OFFLOAD=true
+export ENABLE_IMAGE_CPU_OFFLOAD=false
 export FAST_IMAGE_SAMPLING=false
+export QWEN_LOAD_IN_8BIT=false  # Default, reduces VRAM
+
+
 
 streamlit run streamlit-app.py --server.fileWatcherType none
 
+# [1] 2690470

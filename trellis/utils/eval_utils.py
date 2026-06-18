@@ -3,6 +3,15 @@ from functools import partial
 import numpy as np
 from torchmetrics.functional.multimodal import clip_score
 from functools import partial
+# Compat: transformers >= ~4.50 moved these helpers from `modeling_utils` to
+# `pytorch_utils`; ImageReward's bundled BLIP (med.py) still imports the old path.
+# Re-expose them so `import ImageReward` works on modern transformers (required for
+# Qwen-Image-Edit / Gemma) without downgrading transformers.
+import transformers.modeling_utils as _mu
+import transformers.pytorch_utils as _pu
+for _name in ("apply_chunking_to_forward", "find_pruneable_heads_and_indices", "prune_linear_layer"):
+    if not hasattr(_mu, _name) and hasattr(_pu, _name):
+        setattr(_mu, _name, getattr(_pu, _name))
 import ImageReward as RM
 
 class ImageBasedPromptEvaluator:

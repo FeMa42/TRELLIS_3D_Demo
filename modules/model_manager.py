@@ -82,10 +82,10 @@ class ModelManager:
         # CPU offloading configuration (Qwen-specific, FLUX and Gemini handle their own)
         # Support both old (ENABLE_FLUX_CPU_OFFLOAD) and new (ENABLE_IMAGE_CPU_OFFLOAD) env vars
         enable_image_offload_env = os.environ.get("ENABLE_IMAGE_CPU_OFFLOAD") or os.environ.get("ENABLE_FLUX_CPU_OFFLOAD")
-        enable_image_cpu_offload = enable_image_offload_env and enable_image_offload_env.lower() == "true"
+        self.enable_image_cpu_offload = enable_image_offload_env and enable_image_offload_env.lower() == "true"
 
         if self.image_model == "qwen":
-            self.enable_qwen_cpu_offload = enable_image_cpu_offload
+            self.enable_qwen_cpu_offload = self.enable_image_cpu_offload
             self.use_qwen_cpu_offload = (self.image_device == "cuda:0" or self.image_device == "cuda") and self.enable_qwen_cpu_offload
 
         # Reward model configuration (optional, disabled by default to save VRAM)

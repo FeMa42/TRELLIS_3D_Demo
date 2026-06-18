@@ -4,9 +4,43 @@ BACKEND = 'spconv'
 DEBUG = False
 ATTN = 'flash_attn'
 
+def _patch_xformers_blackwell():
+    """Make xformers usable on Blackwell (sm_120) GPUs.
+
+    xformers' attention auto-dispatch wrongly selects the Flash-Attention-3
+    (Hopper) kernel on Blackwell because FA3 advertises only a compute-capability
+    floor (sm>=8.0). The FA3 kernels are Hopper-only, so the launch fails with
+    ``CUDA error: invalid argument``. We make FA3 report itself unsupported on
+    sm>=10.0 so dispatch falls back to the working FA2/cutlass kernels. No-op on
+    Hopper and older GPUs, and silent if xformers lacks the FA3 backend.
+    """
+    try:
+        import torch
+        from xformers.ops.fmha import flash3
+    except Exception:
+        return
+    if getattr(flash3.FwOp, '_blackwell_patched', False):
+        return
+    _orig = flash3.FwOp.not_supported_reasons.__func__
+
+    def not_supported_reasons(cls, d):
+        reasons = _orig(cls, d)
+        try:
+            if d.query.device.type == 'cuda' and torch.version.hip is None:
+                if torch.cuda.get_device_capability(d.query.device) >= (10, 0):
+                    reasons.append('FA3 kernels are Hopper-only; '
+                                   'Blackwell (sm>=100) not supported in this build')
+        except Exception:
+            pass
+        return reasons
+
+    flash3.FwOp.not_supported_reasons = classmethod(not_supported_reasons)
+    flash3.FwOp._blackwell_patched = True
+
+
 def __from_env():
     import os
-    
+
     global BACKEND
     global DEBUG
     global ATTN
@@ -23,6 +57,9 @@ def __from_env():
         DEBUG = env_sparse_debug == '1'
     if env_sparse_attn is not None and env_sparse_attn in ['xformers', 'flash_attn']:
         ATTN = env_sparse_attn
+
+    if ATTN == 'xformers':
+        _patch_xformers_blackwell()
         
     print(f"[SPARSE] Backend: {BACKEND}, Attention: {ATTN}")
         

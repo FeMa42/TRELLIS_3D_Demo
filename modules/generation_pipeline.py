@@ -89,7 +89,8 @@ class GenerationPipeline:
         """
         # Default suffix for 3D printing optimization
         if custom_suffix is None:
-            custom_suffix = " Render of high quality 3D model on neutral background. Solid, contiguous mesh, optimized for 3D printing."
+            # custom_suffix = " Render of high quality 3D model on neutral background. Solid, contiguous mesh, optimized for 3D printing."
+            custom_suffix = " Render of high quality 3D model on neutral background, optimized for 3D printing."
 
         return base_prompt + custom_suffix
     

@@ -14,8 +14,8 @@ from modules.model_manager import get_model_manager
 from modules.generation_pipeline import get_generation_pipeline
 
 # Set environment variables
-os.environ['ATTN_BACKEND'] = 'flash-attn'
-os.environ['SPCONV_ALGO'] = 'auto'
+os.environ['ATTN_BACKEND'] = 'xformers'
+os.environ['SPCONV_ALGO'] = 'native'  # verified-working spconv algo on Blackwell (sm_120)
 os.environ['OMP_NUM_THREADS'] = '4'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
