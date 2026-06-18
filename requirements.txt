@@ -1,6 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
 
 accelerate==1.10.0
+peft==0.19.1
 git+https://github.com/huggingface/diffusers
 gradio_iframe==0.0.10
 torch==2.4.0
