@@ -26,9 +26,9 @@ export USE_GAUSSIAN_RENDERING=true
 export IMAGE_MODEL=qwen # flux, gemini, qwen
 # FLUX MODEL 
 # cpu offload if we have less than 24GB of VRAM 
-export USE_FLUX_DEV=true
+export USE_FLUX_DEV=false
 export ENABLE_IMAGE_CPU_OFFLOAD=false
-export FAST_IMAGE_SAMPLING=false
+export FAST_IMAGE_SAMPLING=true
 export QWEN_LOAD_IN_8BIT=false  # Default, reduces VRAM
 
 # Printability (Stage-1 sparse structure)
@@ -39,9 +39,9 @@ export TRELLIS_STAGE1_FILL_HOLES=true
 # Optional: load a printability DPO LoRA onto the Stage-1 flow model.
 # Stacks with fill_holes for the full effect (see printability_optimization_3d.md).
 # Validated at sparse_structure_cfg ~ 5.0. Leave empty to disable.
-export TRELLIS_STAGE1_LORA=""
+# export TRELLIS_STAGE1_LORA=""
 # To enable, point at the vendored r=16 checkpoint:
-# export TRELLIS_STAGE1_LORA=checkpoints/printability_lora_r16
+export TRELLIS_STAGE1_LORA=checkpoints/printability_lora_r16
 
 
 streamlit run streamlit-app.py --server.fileWatcherType none
