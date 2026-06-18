@@ -31,6 +31,10 @@ export ENABLE_IMAGE_CPU_OFFLOAD=false
 export FAST_IMAGE_SAMPLING=false
 export QWEN_LOAD_IN_8BIT=false  # Default, reduces VRAM
 
+# Printability (Stage-1 sparse structure)
+# Fill enclosed voids in the Stage-1 occupancy grid before Stage-2.
+# ~15% less 3D-print support material, detail-safe. Free (no GPU/training cost).
+export TRELLIS_STAGE1_FILL_HOLES=true
 
 
 streamlit run streamlit-app.py --server.fileWatcherType none

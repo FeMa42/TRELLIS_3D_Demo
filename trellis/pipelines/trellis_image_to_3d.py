@@ -1,5 +1,6 @@
 from typing import *
 from contextlib import contextmanager
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -202,7 +203,17 @@ class TrellisImageTo3DPipeline(Pipeline):
         
         # Decode occupancy latent
         decoder = self.models['sparse_structure_decoder']
-        coords = torch.argwhere(decoder(z_s)>0)[:, [0, 2, 3, 4]].int()
+        occ = decoder(z_s) > 0   # (num_samples, 1, D, H, W) bool; raw logits, no sigmoid
+
+        # Printability fix (see printability_optimization_3d.md): fill enclosed voids
+        # in the Stage-1 occupancy grid before Stage-2. ~15% less slicer support
+        # volume, detail-safe. Default off; toggled by env var (read each call).
+        if os.environ.get('TRELLIS_STAGE1_FILL_HOLES', 'false').lower() in ('1', 'true', 'yes'):
+            from trellis.utils.printability_utils import fill_occupancy_holes
+            occ_np = fill_occupancy_holes(occ[:, 0].detach().cpu().numpy())
+            occ[:, 0] = torch.from_numpy(occ_np).to(occ.device)
+
+        coords = torch.argwhere(occ)[:, [0, 2, 3, 4]].int()
 
         return coords
 
