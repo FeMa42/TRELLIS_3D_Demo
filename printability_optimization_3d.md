@@ -357,22 +357,31 @@ Run: `pytest tests/test_stl_repair.py -v`
 Expected: FAIL — `ensure_printable_mesh` undefined.
 
 - [ ] **Step 3: Implement and call it in the converter**
+
+> **⚠️ Lesson learned (do NOT use pymeshfix `repair()` here).** The original draft used `pymeshfix.MeshFix(...).repair()`. On real TRELLIS GLBs — which are non-watertight, multi-component shells — `repair()` discards most of the geometry and collapses the mesh to a small fragment, producing **flat/broken STLs** (observed: 14,147 faces → 1,808, volume 0.268 → 0.013). The unit test (a clean box missing 2 faces) repaired fine and never exposed this. Use **gentle, geometry-preserving** trimesh repair with a **fallback to the original mesh** instead. This is consistent with the worktree finding that aggressive mesh-domain ops destroy TRELLIS geometry.
+
 Add to `modules/simple_stl_converter.py`:
 ```python
 def ensure_printable_mesh(mesh):
-    """Make a mesh manifold + watertight for FDM slicing. Uses pymeshfix (full repair)."""
-    import numpy as np, trimesh, pymeshfix
+    """Best-effort improve a mesh for FDM slicing WITHOUT destroying geometry.
+
+    TRELLIS GLBs are non-watertight, multi-component shells; an aggressive repair
+    collapses them to a flat fragment. Apply only gentle, geometry-preserving
+    repairs and fall back to the original if geometry/bbox is lost.
+    """
+    import numpy as np, trimesh
     if mesh.is_watertight and mesh.is_winding_consistent:
         return mesh
-    mfix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=np.float64),
-                             np.asarray(mesh.faces, dtype=np.int32))
-    mfix.repair(verbose=False)   # removes degeneracies/self-intersections, fills holes
-    out = trimesh.Trimesh(vertices=mfix.v, faces=mfix.f, process=True)
-    if not out.is_watertight:
-        out.fill_holes()
-    return out
+    repaired = mesh.copy()
+    repaired.merge_vertices()
+    trimesh.repair.fix_normals(repaired)   # consistent winding + outward normals
+    trimesh.repair.fill_holes(repaired)    # gentle small-boundary fill (never deletes geometry)
+    bbox_preserved = np.allclose(mesh.extents, repaired.extents, rtol=0.02, atol=1e-6)
+    if len(repaired.faces) < 0.9 * len(mesh.faces) or not bbox_preserved:
+        return mesh                        # over-aggressive result -> keep original
+    return repaired
 ```
-Then in `convert_glb_to_stl`, after `mesh = trimesh.load(glb_path, force='mesh')` and before `mesh.export(...)`, insert `mesh = ensure_printable_mesh(mesh)`.
+Then in `convert_glb_to_stl`, after `mesh = trimesh.load(glb_path, force='mesh')` and before `mesh.export(...)`, insert `mesh = ensure_printable_mesh(mesh)`. Regression test: a two-box multi-component non-watertight mesh must keep its bounding box (see `tests/test_stl_repair.py::test_preserves_geometry_of_multicomponent_mesh`).
 
 - [ ] **Step 4: Run, verify it passes**
 Run: `pytest tests/test_stl_repair.py -v`

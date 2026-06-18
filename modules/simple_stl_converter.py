@@ -15,25 +15,33 @@ import os
 
 
 def ensure_printable_mesh(mesh):
-    """Make a mesh manifold + watertight for FDM slicing.
+    """Best-effort improve a mesh for FDM slicing WITHOUT destroying geometry.
 
-    Uses pymeshfix's full repair (removes degeneracies/self-intersections and
-    fills holes). Print-validity only; does not change the gross shape, so it
-    does not reduce slicer support volume.
+    TRELLIS GLB meshes are non-watertight, multi-component shells. An aggressive
+    repair (e.g. pymeshfix.repair) discards most of that geometry and collapses
+    the mesh to a small fragment -> a "flat"/broken STL. So we only apply gentle,
+    geometry-preserving repairs (merge duplicate vertices, fix winding/normals,
+    fill small boundary holes) and fall back to the original mesh if the result
+    lost substantial geometry or shrank its bounding box. Print-validity only;
+    this does not reduce slicer support volume.
     """
     import numpy as np
     import trimesh
-    import pymeshfix
 
     if mesh.is_watertight and mesh.is_winding_consistent:
         return mesh
-    mfix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=np.float64),
-                             np.asarray(mesh.faces, dtype=np.int32))
-    mfix.repair(verbose=False)
-    out = trimesh.Trimesh(vertices=mfix.v, faces=mfix.f, process=True)
-    if not out.is_watertight:
-        out.fill_holes()
-    return out
+
+    repaired = mesh.copy()
+    repaired.merge_vertices()
+    trimesh.repair.fix_normals(repaired)   # consistent winding + outward normals
+    trimesh.repair.fill_holes(repaired)    # gentle small-boundary fill (adds faces, never deletes geometry)
+
+    # Safety net: never return a mesh that lost substantial geometry or whose
+    # bounding box collapsed (the symptom of an over-aggressive repair).
+    bbox_preserved = np.allclose(mesh.extents, repaired.extents, rtol=0.02, atol=1e-6)
+    if len(repaired.faces) < 0.9 * len(mesh.faces) or not bbox_preserved:
+        return mesh
+    return repaired
 
 
 def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "output") -> str:
