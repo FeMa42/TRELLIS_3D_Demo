@@ -243,7 +243,17 @@ class ModelManager:
             torch.cuda.set_device(target_device_idx)
             pipeline = TrellisImageTo3DPipeline.from_pretrained(TRELLIS_MODEL_ID)
             pipeline.to(self.trellis_device)
-            
+
+            # Optional printability DPO LoRA on the Stage-1 sparse-structure flow model.
+            # See printability_optimization_3d.md. Stacks with TRELLIS_STAGE1_FILL_HOLES.
+            lora_dir = os.environ.get('TRELLIS_STAGE1_LORA', '').strip()
+            if lora_dir:
+                from peft import PeftModel
+                flow = pipeline.models['sparse_structure_flow_model']
+                pipeline.models['sparse_structure_flow_model'] = PeftModel.from_pretrained(
+                    flow, lora_dir, is_trainable=False)
+                print(f"[printability] Loaded Stage-1 LoRA from {lora_dir}")
+
             # Enable CPU offloading if requested
             if self.enable_trellis_cpu_offload:
                 pipeline.enable_model_cpu_offload(execution_device=self.trellis_device)
