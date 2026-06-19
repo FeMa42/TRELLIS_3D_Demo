@@ -31,6 +31,8 @@ os.environ.setdefault('TRELLIS_STAGE1_LORA', '')
 # Printable STL export: voxel-remesh into a single watertight solid on STL export
 # (validated in investigations/mesh_repair). env-overridable; set 'off' to disable.
 os.environ.setdefault('TRELLIS_PRINT_REMESH', 'voxel288_smooth')
+# Decimate the print-ready mesh to this target face count (lighter viewer + slicer; 0 disables).
+os.environ.setdefault('TRELLIS_PRINT_TARGET_FACES', '25000')
 
 # Initialize session state for storing models and generated content
 if 'flux_pipe' not in st.session_state:

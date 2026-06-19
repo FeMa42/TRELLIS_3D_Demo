@@ -44,7 +44,35 @@ def ensure_printable_mesh(mesh):
     return repaired
 
 
-def remesh_for_printing(mesh, res=288, smooth_iters=8, max_voxels=30_000_000):
+def _decimate_watertight(mesh, target_faces):
+    """Manifold-preserving decimation to ~target_faces, then watertight repair.
+
+    pyvista decimate_pro(preserve_topology) keeps the surface closed; pymeshfix.repair
+    then cleans the few non-manifold edges it leaves -> a light, watertight,
+    single-component solid (validated in investigations/mesh_repair: ~25k faces holds
+    f1@0.01 ~0.875 and DINOv2 ~0.037, at the perceptual noise floor, ~14x lighter than
+    the raw remesh). Returns None if the result collapses (caller keeps the heavy mesh).
+    """
+    import numpy as np
+    import pyvista as pv
+    import pymeshfix
+    if len(mesh.faces) <= target_faces:
+        return mesh
+    faces_pv = np.hstack([np.full((len(mesh.faces), 1), 3), mesh.faces]).astype(np.int64).ravel()
+    ratio = 1.0 - target_faces / len(mesh.faces)
+    dec = pv.PolyData(mesh.vertices, faces_pv).decimate_pro(ratio, preserve_topology=True)
+    dec_faces = dec.faces.reshape(-1, 4)[:, 1:]
+    dt = trimesh.Trimesh(np.asarray(dec.points), dec_faces, process=True)
+    mf = pymeshfix.MeshFix(np.asarray(dt.vertices, np.float64), np.asarray(dt.faces, np.int32))
+    mf.repair(verbose=False)
+    out = trimesh.Trimesh(mf.v, mf.f, process=True)
+    # Guard against catastrophic collapse: keep non-trivial geometry + preserved bbox.
+    if len(out.faces) < 8 or not np.allclose(mesh.extents, out.extents, rtol=0.1, atol=1e-6):
+        return None
+    return out
+
+
+def remesh_for_printing(mesh, res=288, smooth_iters=8, target_faces=None, max_voxels=30_000_000):
     """Solid voxel remesh + Taubin smoothing -> a single watertight, manifold print solid.
 
     TRELLIS GLBs are fragmented, non-watertight, multi-component shells (median ~500
@@ -77,6 +105,18 @@ def remesh_for_printing(mesh, res=288, smooth_iters=8, max_voxels=30_000_000):
         return None
     if not np.allclose(mesh.extents, r.extents, rtol=0.05, atol=1e-6):
         return None
+    # Decimate to a lightweight, print/viewer-friendly target (env-gated; default 25000).
+    # The raw remesh is ~340k tiny faces, which strains viewers/slicers; for small prints
+    # the lost sub-mm detail is irrelevant. 0/empty disables decimation.
+    if target_faces is None:
+        try:
+            target_faces = int(os.environ.get('TRELLIS_PRINT_TARGET_FACES', '25000') or 0)
+        except ValueError:
+            target_faces = 25000
+    if target_faces and len(r.faces) > target_faces:
+        decimated = _decimate_watertight(r, target_faces)
+        if decimated is not None:
+            r = decimated
     return r
 
 

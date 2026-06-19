@@ -94,3 +94,23 @@ def test_export_print_ready_remesh_on_is_watertight(tmp_path, monkeypatch):
     pg, stl = export_print_ready(glb, str(tmp_path), basename="pr")
     assert pg and stl
     assert trimesh.load(stl, force="mesh").is_watertight
+
+
+def test_decimate_watertight_reduces_and_stays_watertight():
+    # Manifold-preserving decimation must shrink a heavy watertight mesh while
+    # keeping it watertight (decimate_pro preserve_topology + pymeshfix repair).
+    from modules.simple_stl_converter import _decimate_watertight
+    sphere = trimesh.creation.icosphere(subdivisions=5)  # ~20480 faces, watertight
+    out = _decimate_watertight(sphere, 2000)
+    assert out is not None
+    assert len(out.faces) < len(sphere.faces)
+    assert out.is_watertight
+
+
+def test_remesh_for_printing_respects_target_faces():
+    sphere = trimesh.creation.icosphere(subdivisions=4)  # watertight
+    full = remesh_for_printing(sphere, res=96, smooth_iters=0, target_faces=0)      # off
+    light = remesh_for_printing(sphere, res=96, smooth_iters=0, target_faces=1500)  # decimated
+    assert full is not None and light is not None
+    assert light.is_watertight
+    assert len(light.faces) < len(full.faces)
