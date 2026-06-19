@@ -8,7 +8,6 @@ import streamlit.components.v1 as components
 import torch
 import gc
 from PIL import Image
-from modules.simple_stl_converter import convert_glb_to_stl
 from modules.content_moderation import get_content_moderator
 from modules.gallery_manager import get_gallery_manager
 from modules.three_d_viewer import create_3d_viewer_html
@@ -43,8 +42,10 @@ if 'generated_images' not in st.session_state:
     st.session_state.generated_images = []
 if 'selected_image_index' not in st.session_state:
     st.session_state.selected_image_index = None
-if 'video_path' not in st.session_state:
-    st.session_state.video_path = None
+if 'print_ready_glb_path' not in st.session_state:
+    st.session_state.print_ready_glb_path = None
+if 'stl_path' not in st.session_state:
+    st.session_state.stl_path = None
 if 'glb_path' not in st.session_state:
     st.session_state.glb_path = None
 if 'using_meshfleet' not in st.session_state:
@@ -83,10 +84,6 @@ def get_device_config():
 def get_trellis_cpu_offload_setting():
     """Check if TRELLIS CPU offloading is requested."""
     return os.environ.get("ENABLE_TRELLIS_CPU_OFFLOAD") == "true"
-
-def get_gaussian_rendering_setting():
-    """Check if Gaussian rendering is requested."""
-    return os.environ.get("USE_GAUSSIAN_RENDERING") == "true"
 
 # Gallery manager initialization (cached)
 @st.cache_resource
@@ -135,8 +132,6 @@ def load_generation_pipeline():
 if 'generation_pipeline' not in st.session_state:
     st.session_state.generation_pipeline = None
 
-if 'use_gaussian_rendering' not in st.session_state:
-    st.session_state.use_gaussian_rendering = get_gaussian_rendering_setting()
 if 'is_generating_images' not in st.session_state:
     st.session_state.is_generating_images = False
 if 'is_generating_3d' not in st.session_state:
@@ -147,7 +142,8 @@ def reset_generated_content():
     """Reset only generated content, preserving loaded models"""
     st.session_state.generated_images = []
     st.session_state.selected_image_index = None
-    st.session_state.video_path = None
+    st.session_state.print_ready_glb_path = None
+    st.session_state.stl_path = None
     st.session_state.glb_path = None
     st.session_state.stl_file_path = None
     st.session_state.stl_file_number = None
@@ -223,17 +219,12 @@ def generate_3d_model(image, base_seed=None):
         content_moderator=st.session_state.content_moderator
     )
 
-    sample_video = st.session_state.use_gaussian_rendering
-    use_simple_glb = not st.session_state.use_gaussian_rendering
-
     with st.spinner(f"🔮 Transforming image into 3D model..."):
-        video_path, glb_path = st.session_state.generation_pipeline.generate_3d_model(
-            image, 
-            base_seed=base_seed, 
-            sample_video=sample_video,
-            use_simple_glb=use_simple_glb
+        glb_path, print_ready_glb_path, stl_path = st.session_state.generation_pipeline.generate_3d_model(
+            image,
+            base_seed=base_seed,
         )
-        return video_path, glb_path
+        return glb_path, print_ready_glb_path, stl_path
 
 # def prepare_3d_model_for_printing():
 #     if st.session_state.stl_prepared:
@@ -301,14 +292,21 @@ def prepare_3d_model_for_printing():
         with open(st.session_state.glb_path, "rb") as f_in:
             f.write(f_in.read())
 
-    # Generate STL (simple conversion without base plate)
-    stl_filepath = convert_glb_to_stl(glb_output, file_number, output_folder=output_dir)
-    
+    # Use the STL already produced during generation
+    import shutil
+    src_stl = st.session_state.stl_path
+    stl_filename = f"model_{file_number}.stl"
+    stl_filepath = os.path.join(output_dir, stl_filename)
+    if src_stl and os.path.exists(src_stl):
+        shutil.copy2(src_stl, stl_filepath)
+    else:
+        stl_filepath = None
+
     # Store the STL file path in session state for download
     st.session_state.stl_file_path = stl_filepath
     st.session_state.stl_file_number = file_number
     st.session_state.stl_prepared = True
-    
+
     # Save to gallery
     if st.session_state.selected_image_index is not None and st.session_state.generated_images:
         selected_image = st.session_state.generated_images[st.session_state.selected_image_index]
@@ -318,7 +316,7 @@ def prepare_3d_model_for_printing():
             selected_image,
             stl_filepath,
             st.session_state.glb_path,
-            st.session_state.video_path
+            None
         )
 
     with open(st.session_state.stl_file_path, "rb") as file:
@@ -696,7 +694,8 @@ with tab1:
                     base_seed=st.session_state.pending_image_seed
                 )
                 st.session_state.selected_image_index = None
-                st.session_state.video_path = None
+                st.session_state.print_ready_glb_path = None
+                st.session_state.stl_path = None
                 st.session_state.glb_path = None
                 st.session_state.current_prompt = st.session_state.pending_prompt
                 st.session_state.generation_step = 1
@@ -748,8 +747,8 @@ with tab1:
             # Automatically generate 3D model
             selected_image = st.session_state.generated_images[st.session_state.pending_image_index]
             
-            st.session_state.video_path, st.session_state.glb_path = generate_3d_model(
-                selected_image, 
+            st.session_state.glb_path, st.session_state.print_ready_glb_path, st.session_state.stl_path = generate_3d_model(
+                selected_image,
                 base_seed=st.session_state.pending_model_seed
             )
             st.session_state.generation_step = 2
@@ -766,23 +765,17 @@ with tab1:
             st.markdown("---")
             st.markdown("### Step 3: Your 3D Model is Ready! 🎉")
         
-            # check if video path is empty, if so only show 3D viewer
-            if len(st.session_state.video_path) == 0:
-                st.markdown("#### 🎮 Interactive 3D Model")
-                viewer_html = create_3d_viewer_html(st.session_state.glb_path)
-                components.html(viewer_html, height=550)
-            else:
-                # Display video and 3D viewer side by side - adjusted proportions
-                col1, col2 = st.columns([1, 2])  # Changed from [2, 2] to [1, 2] to make video column smaller
-                with col1:
-                    st.markdown("#### 🎬 Gaussian Splatting")
-                    st.video(st.session_state.video_path)
-                    st.caption("*AI's interpretation of the 3D structure*")
-                
-                with col2:
-                    st.markdown("#### 🎮 Interactive 3D Model")
-                    viewer_html = create_3d_viewer_html(st.session_state.glb_path)
-                    components.html(viewer_html, height=550)  # Increased from 400 to 550
+            col_left, col_right = st.columns(2)
+            with col_left:
+                st.caption("🎨 Colored model")
+                components.html(create_3d_viewer_html(st.session_state.glb_path), height=550)
+            with col_right:
+                if st.session_state.print_ready_glb_path:
+                    st.caption("🧱 Print-ready (normals)")
+                    components.html(create_3d_viewer_html(st.session_state.print_ready_glb_path, normals=True), height=550)
+                else:
+                    st.caption("🧱 Print-ready")
+                    st.info("No printable mesh could be generated for this model.")
                 
             st.markdown("---")
             
