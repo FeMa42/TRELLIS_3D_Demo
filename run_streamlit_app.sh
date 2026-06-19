@@ -47,7 +47,8 @@ export TRELLIS_PRINT_REMESH=voxel288_smooth
 # Decimate the print-ready mesh to this target face count (the raw remesh is ~340k tiny
 # faces, which strains viewers/slicers). Validated in investigations/mesh_repair: ~25k
 # keeps quality at the perceptual noise floor while being 14x lighter. 0 disables.
-export TRELLIS_PRINT_TARGET_FACES=25000
+# Below ~10k it over-collapses some shapes
+export TRELLIS_PRINT_TARGET_FACES=50000
 
 
 streamlit run streamlit-app.py --server.fileWatcherType none
