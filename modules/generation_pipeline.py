@@ -12,7 +12,7 @@ Usage:
     
     generator = GenerationPipeline()
     images = generator.generate_images("A dragon", num_images=4)
-    video_path, glb_path = generator.generate_3d_model(selected_image)
+    glb_path, print_ready_glb_path, stl_path = generator.generate_3d_model(selected_image)
 """
 
 import os
@@ -263,32 +263,28 @@ class GenerationPipeline:
         
         return filtered_images, images
     
-    def generate_3d_model(self, 
-                         image: Image.Image, 
+    def generate_3d_model(self,
+                         image: Image.Image,
                          base_seed: Optional[int] = None,
                          sparse_structure_steps: int = 24,
                          sparse_structure_cfg: float = 7.5,
                          slat_steps: int = 24,
                          slat_cfg: float = 3.0,
-                         sample_video=True, 
-                         texture_size=1024,
-                         use_simple_glb=True) -> Tuple[str, str]:
+                         texture_size=1024) -> Tuple[str, str, str]:
         """
         Generate a 3D model from an image using the TRELLIS pipeline.
-        
+
         Args:
             image: Input PIL Image
             base_seed: Optional seed for reproducibility
             sparse_structure_steps: Steps for sparse structure sampling
             sparse_structure_cfg: CFG strength for sparse structure
-            slat_steps: Steps for slat sampling  
+            slat_steps: Steps for slat sampling
             slat_cfg: CFG strength for slat sampling
-            sample_video: Whether to generate video output
-            texture_size: Size for texture rendering (when not using simple GLB)
-            use_simple_glb: Use memory-efficient GLB export (avoids 66TB bug)
-            
+            texture_size: Size for texture rendering (unused, kept for API compatibility)
+
         Returns:
-            Tuple of (video_path, glb_path)
+            Tuple of (glb_path, print_ready_glb_path, stl_path)
         """
         if self.trellis_pipeline is None:
             raise ValueError("TRELLIS pipeline not loaded")
@@ -318,6 +314,7 @@ class GenerationPipeline:
             outputs = self.trellis_pipeline.run(
                 image,
                 seed=actual_seed,
+                formats=['mesh'],
                 sparse_structure_sampler_params={
                     "steps": sparse_structure_steps,
                     "cfg_strength": sparse_structure_cfg,
@@ -333,58 +330,31 @@ class GenerationPipeline:
         
         # Create temporary directory for outputs
         temp_dir = tempfile.mkdtemp()
-        
-        if sample_video:
-            # Render Gaussian Splatting video
-            video_gs = render_utils.render_video(outputs['gaussian'][0])['color']
-            # Save video
-            video_path = os.path.join(temp_dir, "gaussian_splat.mp4")
-            imageio.mimsave(video_path, video_gs, fps=30)
-        else:
-            video_path = ""
 
         gc.collect()
         torch.cuda.empty_cache()
-        
-        # Export GLB - choose method based on use_simple_glb parameter
+
+        # Export GLB using memory-efficient mesh-only path
         glb_path = os.path.join(temp_dir, "3d_model.glb")
-        
-        if use_simple_glb:
-            # Use memory-efficient GLB export 
-            glb = to_glb_simple(
-                outputs['mesh'][0],
-                simplify=0.95,
-                color=(180, 180, 220),  # Light blue color
-                fill_holes=True,
-                remove_floating=True,
-                verbose=False
-            )
-        else:
-            # Use original GLB export with texture rendering
-            glb = postprocessing_utils.to_glb_new(
-                outputs['gaussian'][0],
-                outputs['mesh'][0],
-                # Existing parameters
-                fill_holes=True,
-                fill_holes_max_size=0.2,
-                simplify=0.98,
-                texture_size=texture_size,
-                brightness=1.5,
-                # New parameters for floating component removal
-                remove_floating=True,
-                min_component_ratio=0.03,  # Remove components smaller than 3% of total faces
-                min_component_faces=50,    # Or smaller than 50 faces absolute
-                use_voxel_cleanup=False,   # Set to True for very aggressive cleanup
-                voxel_resolution=256,
-            )
-        
+        glb = to_glb_simple(
+            outputs['mesh'][0],
+            simplify=0.95,
+            color=(180, 180, 220),  # Light blue color
+            fill_holes=True,
+            remove_floating=True,
+            verbose=False
+        )
         glb.export(glb_path)
-        
+
         # Clean up outputs to free memory
         del outputs
-        
-        print(f"✅ 3D model generated: {video_path}, {glb_path}")
-        return video_path, glb_path
+
+        # Print-ready watertight remesh (env-gated) -> GLB (normals viewer) + STL (download).
+        from modules.simple_stl_converter import export_print_ready
+        print_ready_glb_path, stl_path = export_print_ready(glb_path, temp_dir)
+
+        print(f"✅ 3D model generated: {glb_path}")
+        return glb_path, print_ready_glb_path, stl_path
     
     def get_generation_info(self, seed: int) -> dict:
         """
@@ -467,17 +437,16 @@ def generate_images(prompt: str, num_images: int = 4, base_seed: Optional[int] =
     return pipeline.generate_images(prompt, num_images, base_seed)
 
 
-def generate_3d_model(image: Image.Image, base_seed: Optional[int] = None, use_simple_glb=True) -> Tuple[str, str]:
+def generate_3d_model(image: Image.Image, base_seed: Optional[int] = None) -> Tuple[str, str, str]:
     """
     Legacy function for 3D model generation.
-    
+
     Args:
         image: Input image
         base_seed: Optional seed
-        use_simple_glb: Use memory-efficient GLB export
-        
+
     Returns:
-        Tuple of (video_path, glb_path)
+        Tuple of (glb_path, print_ready_glb_path, stl_path)
     """
     pipeline = get_generation_pipeline()
-    return pipeline.generate_3d_model(image, base_seed, use_simple_glb=use_simple_glb)
+    return pipeline.generate_3d_model(image, base_seed)
