@@ -17,12 +17,8 @@ export ENABLE_REWARD_MODEL=false
 export TRELLIS_MODEL_ID="JeffreyXiang/TRELLIS-image-large"
 # cpu offload if we have less than 24GB of VRAM
 export ENABLE_TRELLIS_CPU_OFFLOAD=false
-# Gaussian Rendering has issues on the A30 Servers with 24GB of VRAM
-# Deactivate Gaussian Rendering on A30 Servers, on L40s you can activate it
-# It also has issues with multi GPU setup right now. So if you use multiple gpus deactivate it 
-export USE_GAUSSIAN_RENDERING=true
 
-# Image Model 
+# Image Model
 export IMAGE_MODEL=qwen # flux, gemini, qwen
 # FLUX MODEL 
 # cpu offload if we have less than 24GB of VRAM 
