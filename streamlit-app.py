@@ -1,4 +1,5 @@
 import os
+import shutil
 import streamlit as st
 
 # App title and description - MUST BE FIRST STREAMLIT COMMAND
@@ -272,6 +273,9 @@ def generate_3d_model(image, base_seed=None):
 
 def prepare_3d_model_for_printing():
     if st.session_state.stl_prepared:
+        if not st.session_state.stl_file_path:
+            st.warning("No STL file available for this model.")
+            return None
         with open(st.session_state.stl_file_path, "rb") as file:
             return file.read()
     
@@ -293,7 +297,6 @@ def prepare_3d_model_for_printing():
             f.write(f_in.read())
 
     # Use the STL already produced during generation
-    import shutil
     src_stl = st.session_state.stl_path
     stl_filename = f"model_{file_number}.stl"
     stl_filepath = os.path.join(output_dir, stl_filename)
@@ -318,6 +321,10 @@ def prepare_3d_model_for_printing():
             st.session_state.glb_path,
             None
         )
+
+    if not st.session_state.stl_file_path:
+        st.warning("No STL file available for this model.")
+        return None
 
     with open(st.session_state.stl_file_path, "rb") as file:
         return file.read()
@@ -798,14 +805,15 @@ with tab1:
             with col2:
                 # Download STL button
                 stl_data = prepare_3d_model_for_printing()
-                # st.download_button(
-                #     label="📦 Prepare for Print",
-                #     data=stl_data,
-                #     file_name=f"model_{st.session_state.stl_file_number}.stl",
-                #     mime="application/octet-stream",
-                #     use_container_width=True,
-                #     type="primary"
-                # )
+                if stl_data is not None:
+                    st.download_button(
+                        label="📦 Download STL",
+                        data=stl_data,
+                        file_name=f"model_{st.session_state.stl_file_number}.stl",
+                        mime="application/octet-stream",
+                        use_container_width=True,
+                        type="primary"
+                    )
             
             # Quick actions
             col1, col2, col3 = st.columns([1,2,1])
