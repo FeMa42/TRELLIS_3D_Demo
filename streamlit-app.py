@@ -28,6 +28,9 @@ os.environ.setdefault('TRELLIS_STAGE1_FILL_HOLES', 'true')
 # Optional Stage-1 DPO LoRA (off by default). To enable, point at the vendored checkpoint:
 #   export TRELLIS_STAGE1_LORA=checkpoints/printability_lora_r16
 os.environ.setdefault('TRELLIS_STAGE1_LORA', '')
+# Printable STL export: voxel-remesh into a single watertight solid on STL export
+# (validated in investigations/mesh_repair). env-overridable; set 'off' to disable.
+os.environ.setdefault('TRELLIS_PRINT_REMESH', 'voxel288_smooth')
 
 # Initialize session state for storing models and generated content
 if 'flux_pipe' not in st.session_state:

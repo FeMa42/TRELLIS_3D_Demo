@@ -1,6 +1,6 @@
 import numpy as np
 import trimesh
-from modules.simple_stl_converter import ensure_printable_mesh
+from modules.simple_stl_converter import ensure_printable_mesh, remesh_for_printing
 
 
 def test_repairs_open_mesh_to_watertight():
@@ -39,3 +39,26 @@ def test_preserves_geometry_of_multicomponent_mesh():
         f"bbox collapsed: {out.extents} vs {combo.extents}"
     assert len(out.faces) >= 0.9 * len(combo.faces), \
         f"geometry gutted: {len(out.faces)} of {len(combo.faces)} faces"
+
+
+def test_remesh_for_printing_merges_into_one_watertight_solid():
+    # Two overlapping boxes = 2 components. The print remesh must fuse them into a
+    # single watertight manifold solid while preserving the overall bounding box.
+    b1 = trimesh.creation.box(extents=(10, 10, 10))
+    b2 = trimesh.creation.box(extents=(10, 10, 10))
+    b2.apply_translation((6, 0, 0))                       # overlaps b1 in x
+    combo = trimesh.util.concatenate([b1, b2])
+    assert len(combo.split(only_watertight=False)) == 2
+
+    out = remesh_for_printing(combo, res=64, smooth_iters=0)  # low res / no smooth = fast & deterministic
+
+    assert out is not None
+    assert out.is_watertight
+    assert len(out.split(only_watertight=False)) == 1        # fused into ONE solid
+    assert np.allclose(out.extents, combo.extents, rtol=0.1), \
+        f"bbox not preserved: {out.extents} vs {combo.extents}"
+
+
+def test_remesh_returns_none_on_empty_mesh():
+    empty = trimesh.Trimesh()
+    assert remesh_for_printing(empty) is None

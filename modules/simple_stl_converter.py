@@ -44,6 +44,42 @@ def ensure_printable_mesh(mesh):
     return repaired
 
 
+def remesh_for_printing(mesh, res=288, smooth_iters=8, max_voxels=30_000_000):
+    """Solid voxel remesh + Taubin smoothing -> a single watertight, manifold print solid.
+
+    TRELLIS GLBs are fragmented, non-watertight, multi-component shells (median ~500
+    components, 0% watertight) -- not printable as solids. This re-extracts the surface
+    from a SOLID voxelization, yielding one closed manifold solid. Validated in
+    investigations/mesh_repair: 100% watertight across the corpus, perceptual quality
+    impact (DINOv2 vs original) ~0.033 -- at the metric's noise floor.
+
+    Returns the remeshed Trimesh, or None if the result is degenerate (caller falls back).
+    The voxel-count guard caps resolution so unusual inputs can't blow up memory.
+    """
+    import numpy as np
+    if mesh is None or len(mesh.faces) == 0:
+        return None
+    diag = float(np.linalg.norm(mesh.extents))
+    if diag <= 0:
+        return None
+    est_voxels = float(np.prod(mesh.extents)) * (res / diag) ** 3
+    if est_voxels > max_voxels:
+        res = max(96, int(res * (max_voxels / est_voxels) ** (1.0 / 3.0)))
+    vg = mesh.voxelized(pitch=diag / res).fill()
+    r = vg.marching_cubes
+    r.apply_transform(vg.transform)   # marching_cubes is in voxel-index space; map back to world
+    r.merge_vertices()
+    trimesh.repair.fix_normals(r)
+    if smooth_iters > 0:
+        trimesh.smoothing.filter_taubin(r, lamb=0.5, nu=-0.53, iterations=smooth_iters)
+    # Validate: non-empty, watertight, and bbox preserved (no collapse).
+    if len(r.faces) == 0 or not r.is_watertight:
+        return None
+    if not np.allclose(mesh.extents, r.extents, rtol=0.05, atol=1e-6):
+        return None
+    return r
+
+
 def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "output") -> str:
     """
     Convert GLB file to STL format without base plate or engraving.
@@ -80,8 +116,21 @@ def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "ou
         output_filename = f"{file_number}.stl"
         output_path = os.path.join(output_folder, output_filename)
 
-        # Repair mesh to watertight/manifold before export
-        mesh = ensure_printable_mesh(mesh)
+        # Make printable before export. TRELLIS meshes are fragmented non-watertight
+        # shells; the env-gated remesh turns them into a single watertight solid.
+        # Falls back to the gentle in-place repair if remesh is disabled or fails.
+        mode = os.environ.get('TRELLIS_PRINT_REMESH', 'off').strip().lower()
+        remeshed = None
+        if mode in ('voxel288_smooth', 'voxel', 'on', 'true', '1'):
+            try:
+                remeshed = remesh_for_printing(mesh)
+            except Exception as e:
+                print(f"⚠️  print remesh failed ({type(e).__name__}: {e}); using gentle repair")
+        if remeshed is not None:
+            mesh = remeshed
+            print("🧱 Applied watertight print remesh (voxel288_smooth)")
+        else:
+            mesh = ensure_printable_mesh(mesh)
 
         # Export as STL
         print(f"💾 Exporting STL to: {output_path}")

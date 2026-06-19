@@ -43,6 +43,12 @@ export TRELLIS_STAGE1_FILL_HOLES=true
 # To enable, point at the vendored r=16 checkpoint:
 export TRELLIS_STAGE1_LORA=checkpoints/printability_lora_r16
 
+# Printable STL export: voxel-remesh the mesh into a single watertight, manifold solid
+# on STL export (TRELLIS meshes are fragmented non-watertight shells). Validated in
+# investigations/mesh_repair: 100% watertight, DINOv2 quality impact ~0.033 (noise floor).
+# Costs ~9s on export and softens the very finest detail; set to 'off' to disable.
+export TRELLIS_PRINT_REMESH=voxel288_smooth
+
 
 streamlit run streamlit-app.py --server.fileWatcherType none
 
