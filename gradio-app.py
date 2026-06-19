@@ -6,7 +6,6 @@ import gc
 import functools
 
 # Import modular components
-from modules.simple_stl_converter import convert_glb_to_stl
 from modules.content_moderation import get_content_moderator
 from modules.gallery_manager import get_gallery_manager
 from modules.three_d_viewer import create_3d_viewer_html
@@ -50,11 +49,6 @@ def get_device_config():
 def get_trellis_cpu_offload_setting():
     """Check if TRELLIS CPU offloading is requested."""
     return os.environ.get("ENABLE_TRELLIS_CPU_OFFLOAD") == "true"
-
-
-def get_gaussian_rendering_setting():
-    """Check if Gaussian rendering is requested."""
-    return os.environ.get("USE_GAUSSIAN_RENDERING") == "true"
 
 
 # Initialize cached managers
@@ -113,7 +107,6 @@ def initialize_session(request: gr.Request):
             'stl_prepared': False,
             'current_prompt': "",
             'generation_step': 0,  # 0: initial, 1: images generated, 2: 3D generated
-            'use_gaussian_rendering': get_gaussian_rendering_setting(),
             'gallery_items_to_show': 20,  # Number of gallery items to display
             'gallery_view_mode': 'Grid',  # Grid or Compact view
         }
@@ -270,27 +263,15 @@ def generate_images(prompt: str, base_seed: int, prompt_suffix: str, guidance_sc
 def select_and_generate_3d_for_index(image_index: int, model_seed: int, request: gr.Request, progress=gr.Progress()):
     """Handle image selection by index and generate 3D model."""
     if request.session_hash not in user_instances:
-        use_gaussian = get_gaussian_rendering_setting()
-        if use_gaussian:
-            return None, None, "Error: Session not initialized"
-        else:
-            return None, "Error: Session not initialized"
+        return None, None, "Error: Session not initialized"
 
     session = user_instances[request.session_hash]
 
     if not session['generated_images']:
-        use_gaussian = get_gaussian_rendering_setting()
-        if use_gaussian:
-            return None, None, "Error: No images generated"
-        else:
-            return None, "Error: No images generated"
+        return None, None, "Error: No images generated"
 
     if image_index >= len(session['generated_images']):
-        use_gaussian = get_gaussian_rendering_setting()
-        if use_gaussian:
-            return None, None, f"Error: Image {image_index + 1} not available"
-        else:
-            return None, f"Error: Image {image_index + 1} not available"
+        return None, None, f"Error: Image {image_index + 1} not available"
 
     # Get selected image
     selected_idx = image_index
@@ -311,48 +292,37 @@ def select_and_generate_3d_for_index(image_index: int, model_seed: int, request:
         content_moderator=content_moderator
     )
 
-    # Generate 3D model
-    sample_video = session['use_gaussian_rendering']
-    use_simple_glb = not session['use_gaussian_rendering']
-
     progress(None, desc="🔮 Transforming image into 3D model...")
 
-    video_path, glb_path = generation_pipeline.generate_3d_model(
+    glb_path, print_ready_glb_path, stl_path = generation_pipeline.generate_3d_model(
         selected_image,
-        base_seed=model_seed if model_seed > 0 else None,
-        sample_video=sample_video,
-        use_simple_glb=use_simple_glb
+        base_seed=model_seed if model_seed > 0 else None
     )
 
     # Update session
-    session['video_path'] = video_path
     session['glb_path'] = glb_path
+    session['stl_file_path'] = stl_path
     session['generation_step'] = 2
     session['stl_prepared'] = False
 
-    progress(None, desc="🎮 Generating 3D viewer...")
+    progress(None, desc="🎮 Generating 3D viewers...")
 
-    # Generate viewer HTML with custom height
-    viewer_html = create_3d_viewer_html(glb_path, container_height="550px")
+    # Build colored viewer HTML
+    colored_html = create_3d_viewer_html(glb_path, container_height="550px")
+
+    # Build normals viewer HTML (or placeholder when unavailable)
+    if print_ready_glb_path:
+        normals_html = create_3d_viewer_html(print_ready_glb_path, normals=True, container_height="550px")
+    else:
+        normals_html = (
+            "<div style='height:550px;display:flex;align-items:center;"
+            "justify-content:center;color:#888'>No printable mesh available</div>"
+        )
 
     progress(None, desc="✅ 3D model ready!")
 
-    # Return results based on rendering mode
-    use_gaussian = session['use_gaussian_rendering']
     status_msg = f"✅ 3D model generated! Image #{selected_idx + 1} selected."
-
-    if use_gaussian:
-        video_output = video_path if video_path and len(video_path) > 0 else None
-        return (
-            video_output,  # video
-            viewer_html,  # HTML viewer
-            status_msg  # status
-        )
-    else:
-        return (
-            viewer_html,  # HTML viewer
-            status_msg  # status
-        )
+    return colored_html, normals_html, status_msg
 
 
 def prepare_for_download(request: gr.Request):
@@ -364,8 +334,9 @@ def prepare_for_download(request: gr.Request):
 
     if session['stl_prepared']:
         # Already prepared, just return the files
+        stl_path = session['stl_file_path']
         return (
-            session['stl_file_path'],
+            stl_path if stl_path and os.path.exists(stl_path) else gr.update(visible=False),
             session['glb_path'],
             f"✅ Saved as #{session['stl_file_number']}"
         )
@@ -386,11 +357,10 @@ def prepare_for_download(request: gr.Request):
         with open(session['glb_path'], "rb") as f_in:
             f.write(f_in.read())
 
-    # Generate STL (simple conversion without base plate)
-    stl_filepath = convert_glb_to_stl(glb_output, file_number, output_folder=output_dir)
+    # Use STL from generation (already produced by generate_3d_model)
+    stl_filepath = session.get('stl_file_path')
 
     # Update session
-    session['stl_file_path'] = stl_filepath
     session['stl_file_number'] = file_number
     session['stl_prepared'] = True
 
@@ -403,12 +373,13 @@ def prepare_for_download(request: gr.Request):
             selected_image,
             stl_filepath,
             session['glb_path'],
-            session['video_path']
+            None  # no video
         )
 
+    stl_download = stl_filepath if stl_filepath and os.path.exists(stl_filepath) else gr.update(visible=False)
     return (
-        stl_filepath,
-        session['glb_path'],
+        stl_download,
+        glb_output,
         f"✅ Saved as #{file_number}"
     )
 
@@ -541,18 +512,11 @@ with gr.Blocks(
 
                     # 3D Model section
                     gr.Markdown("### 3D Model")
+                    gr.Markdown("**Colored** (left) · **Print-ready normals** (right)")
 
-                    # Check if Gaussian rendering is enabled
-                    use_gaussian = get_gaussian_rendering_setting()
-
-                    if use_gaussian:
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                video_output = gr.Video(label="Preview", visible=True)
-                            with gr.Column(scale=2):
-                                model_output = iFrame(height=550)
-                    else:
-                        model_output = iFrame(height=550)
+                    with gr.Row():
+                        model_output_colored = iFrame(height=550)
+                        model_output_normals = iFrame(height=550)
 
                     # Download section
                     gr.Markdown("### Download")
@@ -684,39 +648,21 @@ with gr.Blocks(
         """Handle image selection from gallery and generate 3D."""
         image_index = evt.index  # Get selected image index from event
 
-        # Call existing 3D generation function
-        result = select_and_generate_3d_for_index(image_index, model_seed, request, progress)
-
-        # Unpack based on Gaussian rendering
-        use_gaussian = get_gaussian_rendering_setting()
-        if use_gaussian:
-            video, viewer_html, status = result
-            return video, viewer_html, gr.update(visible=True), gr.update(visible=True), ""
-        else:
-            viewer_html, status = result
-            return None, viewer_html, gr.update(visible=True), gr.update(visible=True), ""
+        colored_html, normals_html, status = select_and_generate_3d_for_index(
+            image_index, model_seed, request, progress
+        )
+        return colored_html, normals_html, gr.update(visible=True), gr.update(visible=True), ""
 
     # Attach to gallery
-    if get_gaussian_rendering_setting():
-        image_gallery.select(
-            handle_gallery_select,
-            inputs=[model_base_seed],
-            outputs=[video_output, model_output, download_stl_btn, download_glb_btn, print_number_text]
-        ).then(
-            prepare_for_download,
-            inputs=None,
-            outputs=[download_stl_btn, download_glb_btn, print_number_text]
-        )
-    else:
-        image_gallery.select(
-            handle_gallery_select,
-            inputs=[model_base_seed],
-            outputs=[gr.State(), model_output, download_stl_btn, download_glb_btn, print_number_text]
-        ).then(
-            prepare_for_download,
-            inputs=None,
-            outputs=[download_stl_btn, download_glb_btn, print_number_text]
-        )
+    image_gallery.select(
+        handle_gallery_select,
+        inputs=[model_base_seed],
+        outputs=[model_output_colored, model_output_normals, download_stl_btn, download_glb_btn, print_number_text]
+    ).then(
+        prepare_for_download,
+        inputs=None,
+        outputs=[download_stl_btn, download_glb_btn, print_number_text]
+    )
 
     # Gallery loading functions
     def load_gallery_with_pagination(search="", items_to_show=20, view_mode="Grid"):
