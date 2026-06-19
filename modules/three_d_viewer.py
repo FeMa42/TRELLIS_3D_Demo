@@ -209,7 +209,12 @@ class ThreeDViewer:
     def _generate_material_js(self) -> str:
         """Generate JavaScript for per-mesh material setup inside traverse."""
         if self.normals:
-            return "child.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });"
+            # toneMapped=false: the renderer uses ACES tone mapping, which crushes
+            # MeshNormalMaterial's raw normal-encoded colors to near-black otherwise.
+            return (
+                "child.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });\n"
+                "                            child.material.toneMapped = false;"
+            )
         return (
             "child.material.side = THREE.DoubleSide;\n"
             "                            // Ensure materials are well-lit\n"

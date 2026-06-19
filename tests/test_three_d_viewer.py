@@ -11,6 +11,9 @@ def _glb(tmp_path):
 def test_normals_true_uses_normal_material(tmp_path):
     html = create_3d_viewer_html(_glb(tmp_path), normals=True)
     assert "MeshNormalMaterial" in html
+    # MeshNormalMaterial must opt out of ACES tone mapping, or its raw normal
+    # colors get crushed to near-black by the renderer.
+    assert "toneMapped = false" in html
 
 
 def test_normals_false_keeps_default_material(tmp_path):

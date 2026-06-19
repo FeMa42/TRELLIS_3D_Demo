@@ -24,7 +24,6 @@ import torch
 from PIL import Image
 from typing import List, Optional, Tuple
 from trellis.utils import postprocessing_utils
-from trellis.utils.postprocessing_utils import to_glb_simple
 
 
 class GenerationPipeline:
@@ -313,7 +312,7 @@ class GenerationPipeline:
             outputs = self.trellis_pipeline.run(
                 image,
                 seed=actual_seed,
-                formats=['mesh'],
+                formats=['mesh', 'gaussian'],  # gaussian is needed to bake the colored GLB texture
                 sparse_structure_sampler_params={
                     "steps": sparse_structure_steps,
                     "cfg_strength": sparse_structure_cfg,
@@ -333,15 +332,21 @@ class GenerationPipeline:
         gc.collect()
         torch.cuda.empty_cache()
 
-        # Export GLB using memory-efficient mesh-only path
+        # Export the colored GLB with baked texture (from the gaussian) for the left viewer.
         glb_path = os.path.join(temp_dir, "3d_model.glb")
-        glb = to_glb_simple(
+        glb = postprocessing_utils.to_glb_new(
+            outputs['gaussian'][0],
             outputs['mesh'][0],
-            simplify=0.95,
-            color=(180, 180, 220),  # Light blue color
             fill_holes=True,
+            fill_holes_max_size=0.2,
+            simplify=0.98,
+            texture_size=texture_size,
+            brightness=1.5,
             remove_floating=True,
-            verbose=False
+            min_component_ratio=0.03,  # Remove components smaller than 3% of total faces
+            min_component_faces=50,    # Or smaller than 50 faces absolute
+            use_voxel_cleanup=False,
+            voxel_resolution=256,
         )
         glb.export(glb_path)
 
