@@ -86,16 +86,18 @@ class ThreeDViewer:
     Advanced 3D viewer generator with configurable options.
     """
     
-    def __init__(self, config: Optional[ViewerConfig] = None, **kwargs):
+    def __init__(self, config: Optional[ViewerConfig] = None, normals: bool = False, **kwargs):
         """
         Initialize the 3D viewer.
-        
+
         Args:
             config: ViewerConfig object with settings
+            normals: When True, apply MeshNormalMaterial to every mesh instead of GLB materials
             **kwargs: Individual config options (override config object)
         """
         self.config = config or ViewerConfig()
-        
+        self.normals = normals
+
         # Override config with any provided kwargs
         for key, value in kwargs.items():
             if hasattr(self.config, key):
@@ -204,6 +206,19 @@ class ThreeDViewer:
         
         return "\n            ".join(js_lines)
     
+    def _generate_material_js(self) -> str:
+        """Generate JavaScript for per-mesh material setup inside traverse."""
+        if self.normals:
+            return "child.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });"
+        return (
+            "child.material.side = THREE.DoubleSide;\n"
+            "                            // Ensure materials are well-lit\n"
+            "                            if (child.material.metalness !== undefined) {{\n"
+            f"                                child.material.metalness = {self.config.model_metalness};\n"
+            f"                                child.material.roughness = {self.config.model_roughness};\n"
+            "                            }}"
+        )
+
     def _generate_javascript(self, glb_data: str) -> str:
         """Generate JavaScript code for the 3D viewer."""
         return f"""
@@ -270,12 +285,7 @@ class ThreeDViewer:
                     // Setup materials
                     model.traverse((child) => {{
                         if (child.isMesh) {{
-                            child.material.side = THREE.DoubleSide;
-                            // Ensure materials are well-lit
-                            if (child.material.metalness !== undefined) {{
-                                child.material.metalness = {self.config.model_metalness};
-                                child.material.roughness = {self.config.model_roughness};
-                            }}
+                            {self._generate_material_js()}
                         }}
                     }});
                     
@@ -408,18 +418,19 @@ class ThreeDViewer:
 
 
 # Convenience function for simple usage (backward compatibility)
-def create_3d_viewer_html(glb_path: str, **options) -> str:
+def create_3d_viewer_html(glb_path: str, normals: bool = False, **options) -> str:
     """
     Create HTML for 3D viewer with default settings.
-    
+
     Args:
         glb_path: Path to GLB file to display
+        normals: When True, apply MeshNormalMaterial to every mesh instead of GLB materials
         **options: Optional configuration overrides
-        
+
     Returns:
         str: Complete HTML string for the 3D viewer
     """
-    viewer = ThreeDViewer(**options)
+    viewer = ThreeDViewer(normals=normals, **options)
     return viewer.generate_html(glb_path)
 
 
