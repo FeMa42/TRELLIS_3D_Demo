@@ -80,6 +80,44 @@ def remesh_for_printing(mesh, res=288, smooth_iters=8, max_voxels=30_000_000):
     return r
 
 
+def prepare_printable_mesh(glb_path: str):
+    """Load a GLB and return the print-ready mesh (env-gated remesh, else gentle repair).
+
+    Single source of truth: the returned mesh is exactly what gets exported as STL.
+    Returns None if the loaded mesh is empty.
+    """
+    mesh = trimesh.load(glb_path, force='mesh')
+    if mesh is None or len(mesh.faces) == 0:
+        return None
+    mode = os.environ.get('TRELLIS_PRINT_REMESH', 'off').strip().lower()
+    remeshed = None
+    if mode in ('voxel288_smooth', 'voxel', 'on', 'true', '1'):
+        try:
+            remeshed = remesh_for_printing(mesh)
+        except Exception as e:
+            print(f"⚠️  print remesh failed ({type(e).__name__}: {e}); using gentle repair")
+    if remeshed is not None:
+        print("🧱 Applied watertight print remesh (voxel288_smooth)")
+        return remeshed
+    return ensure_printable_mesh(mesh)
+
+
+def export_print_ready(glb_path: str, out_dir: str, basename: str = "print_ready"):
+    """Compute the print-ready mesh once; export it as GLB (normals viewer) + STL (download).
+
+    Returns (print_glb_path, stl_path), or (None, None) if the input mesh is empty/degenerate.
+    """
+    mesh = prepare_printable_mesh(glb_path)
+    if mesh is None or len(mesh.faces) == 0:
+        return None, None
+    os.makedirs(out_dir, exist_ok=True)
+    print_glb_path = os.path.join(out_dir, f"{basename}.glb")
+    stl_path = os.path.join(out_dir, f"{basename}.stl")
+    mesh.export(print_glb_path)
+    mesh.export(stl_path)
+    return print_glb_path, stl_path
+
+
 def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "output") -> str:
     """
     Convert GLB file to STL format without base plate or engraving.
@@ -108,29 +146,15 @@ def convert_glb_to_stl(glb_path: str, file_number: str, output_folder: str = "ou
     os.makedirs(output_folder, exist_ok=True)
 
     try:
-        # Load GLB file
+        # Load GLB file and return print-ready mesh
         print(f"📦 Loading GLB from: {glb_path}")
-        mesh = trimesh.load(glb_path, force='mesh')
+        mesh = prepare_printable_mesh(glb_path)
+        if mesh is None:
+            raise Exception("empty mesh — nothing to export")
 
         # Define output path
         output_filename = f"{file_number}.stl"
         output_path = os.path.join(output_folder, output_filename)
-
-        # Make printable before export. TRELLIS meshes are fragmented non-watertight
-        # shells; the env-gated remesh turns them into a single watertight solid.
-        # Falls back to the gentle in-place repair if remesh is disabled or fails.
-        mode = os.environ.get('TRELLIS_PRINT_REMESH', 'off').strip().lower()
-        remeshed = None
-        if mode in ('voxel288_smooth', 'voxel', 'on', 'true', '1'):
-            try:
-                remeshed = remesh_for_printing(mesh)
-            except Exception as e:
-                print(f"⚠️  print remesh failed ({type(e).__name__}: {e}); using gentle repair")
-        if remeshed is not None:
-            mesh = remeshed
-            print("🧱 Applied watertight print remesh (voxel288_smooth)")
-        else:
-            mesh = ensure_printable_mesh(mesh)
 
         # Export as STL
         print(f"💾 Exporting STL to: {output_path}")

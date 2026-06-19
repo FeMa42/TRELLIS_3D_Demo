@@ -62,3 +62,37 @@ def test_remesh_for_printing_merges_into_one_watertight_solid():
 def test_remesh_returns_none_on_empty_mesh():
     empty = trimesh.Trimesh()
     assert remesh_for_printing(empty) is None
+
+
+def test_prepare_printable_mesh_returns_mesh(tmp_path):
+    import os
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    glb = str(tmp_path / "in.glb"); box.export(glb)
+    from modules.simple_stl_converter import prepare_printable_mesh
+    os.environ["TRELLIS_PRINT_REMESH"] = "off"
+    m = prepare_printable_mesh(glb)
+    assert m is not None and len(m.faces) > 0
+
+
+def test_export_print_ready_writes_glb_and_stl(tmp_path):
+    import os
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    glb = str(tmp_path / "in.glb"); box.export(glb)
+    from modules.simple_stl_converter import export_print_ready
+    os.environ["TRELLIS_PRINT_REMESH"] = "off"
+    pg, stl = export_print_ready(glb, str(tmp_path))
+    assert pg and stl and os.path.exists(pg) and os.path.exists(stl)
+    assert len(trimesh.load(pg, force="mesh").faces) > 0
+    assert len(trimesh.load(stl, force="mesh").faces) > 0
+
+
+def test_export_print_ready_remesh_on_is_watertight(tmp_path):
+    import os
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    open_box = trimesh.Trimesh(vertices=box.vertices, faces=box.faces[:-2], process=False)
+    glb = str(tmp_path / "open.glb"); open_box.export(glb)
+    from modules.simple_stl_converter import export_print_ready
+    os.environ["TRELLIS_PRINT_REMESH"] = "voxel288_smooth"
+    pg, stl = export_print_ready(glb, str(tmp_path), basename="pr")
+    assert trimesh.load(stl, force="mesh").is_watertight
+    os.environ["TRELLIS_PRINT_REMESH"] = "off"   # restore default for other tests
