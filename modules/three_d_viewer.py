@@ -178,7 +178,11 @@ class ThreeDViewer:
             buttons.append('<button onclick="resetCamera()">🔄 Reset View</button>')
         
         if self.config.show_wireframe_button:
-            buttons.append('<button onclick="toggleWireframe()" id="wireframeBtn">📐 Wireframe</button>')
+            solid_active = "" if self.normals else "active"
+            normals_active = "active" if self.normals else ""
+            buttons.append(f'<button onclick="setViewMode(\'solid\')" id="mode_solid" class="{solid_active}">⬛ Solid</button>')
+            buttons.append('<button onclick="setViewMode(\'wireframe\')" id="mode_wireframe">📐 Wireframe</button>')
+            buttons.append(f'<button onclick="setViewMode(\'normals\')" id="mode_normals" class="{normals_active}">🌈 Normals</button>')
         
         if self.config.show_rotation_button:
             active_class = "active" if self.config.auto_rotate else ""
@@ -206,30 +210,14 @@ class ThreeDViewer:
         
         return "\n            ".join(js_lines)
     
-    def _generate_material_js(self) -> str:
-        """Generate JavaScript for per-mesh material setup inside traverse."""
-        if self.normals:
-            # toneMapped=false: the renderer uses ACES tone mapping, which crushes
-            # MeshNormalMaterial's raw normal-encoded colors to near-black otherwise.
-            return (
-                "child.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });\n"
-                "                            child.material.toneMapped = false;"
-            )
-        return (
-            "child.material.side = THREE.DoubleSide;\n"
-            "                            // Ensure materials are well-lit\n"
-            "                            if (child.material.metalness !== undefined) {\n"
-            f"                                child.material.metalness = {self.config.model_metalness};\n"
-            f"                                child.material.roughness = {self.config.model_roughness};\n"
-            "                            }"
-        )
-
     def _generate_javascript(self, glb_data: str) -> str:
         """Generate JavaScript code for the 3D viewer."""
         return f"""
             let scene, camera, renderer, controls, model, mixer;
             let autoRotate = {str(self.config.auto_rotate).lower()};
-            let wireframeMode = false;
+            let viewMode = '{('normals' if self.normals else 'solid')}';
+            const normalMaterial = new THREE.MeshNormalMaterial({{ side: THREE.DoubleSide }});
+            normalMaterial.toneMapped = false;
             const container = document.getElementById('container');
             
             // Initialize scene
@@ -287,12 +275,23 @@ class ThreeDViewer:
                     model.position.sub(center.multiplyScalar(scale));
                     model.position.y = 0;
                     
-                    // Setup materials
+                    // Tame materials, ensure normals exist (decimated GLBs may ship
+                    // without a NORMAL accessor), and remember the original material so
+                    // the view-mode toggle can restore it.
                     model.traverse((child) => {{
                         if (child.isMesh) {{
-                            {self._generate_material_js()}
+                            child.material.side = THREE.DoubleSide;
+                            if (child.material.metalness !== undefined) {{
+                                child.material.metalness = {self.config.model_metalness};
+                                child.material.roughness = {self.config.model_roughness};
+                            }}
+                            if (!child.geometry.attributes.normal) {{
+                                child.geometry.computeVertexNormals();
+                            }}
+                            child.userData.origMaterial = child.material;
                         }}
                     }});
+                    setViewMode(viewMode);
                     
                     scene.add(model);
                     
@@ -357,18 +356,23 @@ class ThreeDViewer:
                 controls.update();
             }}
             
-            function toggleWireframe() {{
-                wireframeMode = !wireframeMode;
-                if (document.getElementById('wireframeBtn')) {{
-                    document.getElementById('wireframeBtn').classList.toggle('active', wireframeMode);
-                }}
+            function setViewMode(mode) {{
+                viewMode = mode;
                 if (model) {{
                     model.traverse((child) => {{
-                        if (child.isMesh) {{
-                            child.material.wireframe = wireframeMode;
+                        if (!child.isMesh) return;
+                        if (mode === 'normals') {{
+                            child.material = normalMaterial;
+                        }} else {{
+                            child.material = child.userData.origMaterial;
+                            child.material.wireframe = (mode === 'wireframe');
                         }}
                     }});
                 }}
+                ['solid', 'wireframe', 'normals'].forEach((m) => {{
+                    const b = document.getElementById('mode_' + m);
+                    if (b) b.classList.toggle('active', m === mode);
+                }});
             }}
             
             function toggleRotation() {{
