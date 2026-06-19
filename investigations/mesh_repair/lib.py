@@ -227,6 +227,29 @@ def cand_voxel_smooth(m, res=224, iterations=10):
     return r
 
 
+def cand_voxel_dec(m, res=288, smooth_iters=8, target_faces=25000):
+    """Print-ready remesh, then manifold-preserving decimation + watertight repair.
+
+    voxel288_smooth -> pyvista decimate_pro(preserve_topology) -> pymeshfix.repair.
+    Yields a LIGHT, watertight, single-component, high-quality solid (the heavy
+    342k-face remesh decimated to ~target_faces while staying printable). All
+    in-process (no open3d -> no segfault)."""
+    import pyvista as pv
+    import pymeshfix
+    full = cand_voxel_smooth(m, res, smooth_iters)
+    if len(full.faces) <= target_faces:
+        dt = full
+    else:
+        fp = np.hstack([np.full((len(full.faces), 1), 3), full.faces]).astype(np.int64).ravel()
+        ratio = 1.0 - target_faces / len(full.faces)
+        d = pv.PolyData(full.vertices, fp).decimate_pro(ratio, preserve_topology=True)
+        f = d.faces.reshape(-1, 4)[:, 1:]
+        dt = trimesh.Trimesh(np.asarray(d.points), f, process=True)
+    mf = pymeshfix.MeshFix(np.asarray(dt.vertices, np.float64), np.asarray(dt.faces, np.int32))
+    mf.repair(verbose=False)
+    return trimesh.Trimesh(mf.v, mf.f, process=True)
+
+
 CANDIDATES = {
     "baseline": cand_baseline,
     "trimesh_gentle": cand_trimesh_gentle,

@@ -70,3 +70,35 @@ Fully printable (watertight, single solid, zero non-manifold/boundary edges) at 
 ## 7. Recommendation (for a later, separate productionization decision — NOT done here)
 
 `voxel_288_smooth` is the candidate to take forward. If/when productionized, it fits naturally as an **optional, env-gated** step on the STL/print path (e.g. `TRELLIS_PRINT_REMESH=voxel288_smooth`), applied **only when the user exports for printing** (it costs ~9 s and slightly softens the finest detail, so it shouldn't replace the GLB shown in the viewer). Before that: run DINOv2 + the full 59-shape sweep + one real test print to confirm.
+
+## 8. Decimation (follow-up): the raw remesh is too heavy — decimate it
+
+The `voxel_288_smooth` remesh is **~340k uniform tiny faces**, which strains both the
+interactive viewer (an ~11 MB base64-embedded GLB) and downstream slicers/printers. Since
+these are small prints, sub-mm detail is wasted. We swept manifold-preserving decimation of
+the remesh (`decim_sweep.py` → `decim_results.csv`, 8 shapes; candidate `cand_voxel_dec` in
+`lib.py`).
+
+**Method that works (in-process, no segfault):** `pyvista.decimate_pro(preserve_topology=True)`
+→ `pymeshfix.repair`. The standard quadric decimators (`fast_simplification`, plain
+`pyvista.decimate`) shred a clean watertight mesh into non-manifold fragments (the worktree's
+decimation warning, reproduced: 76 non-manifold edges / 55 components at 25k). `decimate_pro`
+keeps it nearly closed (0 holes, ~5 non-manifold edges), and `pymeshfix` — which *destroys*
+the raw TRELLIS mesh but works cleanly on a *nearly*-perfect one — restores full watertightness.
+
+**Quality vs target (medians, n=8; DINOv2 σ-band = 0.027, between-shape = 0.18):**
+
+| target | median faces | watertight | non-manifold | f1@0.01 | DINOv2 |
+|---|---|---|---|---|---|
+| (full remesh) | 342k | 100% | 0 | 0.89 | 0.033 |
+| 50,000 | 49.7k | 8/8 | 0 | 0.876 | 0.039 |
+| **25,000** | 24.7k | 7/8 | 0 | 0.875 | **0.037** |
+| 12,000 | 11.0k | 7/8 | 0 | 0.869 | 0.067 |
+| 6,000 | 4.1k | 8/8 | 0 | 0.643 | 0.255 (collapses) |
+
+**Operating point: 25,000 faces** — 14× lighter, watertight, zero non-manifold edges,
+DINOv2 0.037 (at the perceptual noise floor → visually identical). 12k is viable for even
+lighter; **below ~10k, `decimate_pro` over-collapses some shapes** (one to 30 faces) — guarded
+against in production by a bbox/face-count check that falls back to the heavy mesh.
+
+**Productionized:** `_decimate_watertight` + `target_faces` in `modules/simple_stl_converter.py::remesh_for_printing`, env `TRELLIS_PRINT_TARGET_FACES` (default 25000; 0 disables). Deps already present (`pyvista`, `pymeshfix`).
