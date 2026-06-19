@@ -21,10 +21,9 @@ import tempfile
 import random
 import numpy as np
 import torch
-import imageio
 from PIL import Image
 from typing import List, Optional, Tuple
-from trellis.utils import render_utils, postprocessing_utils
+from trellis.utils import postprocessing_utils
 from trellis.utils.postprocessing_utils import to_glb_simple
 
 

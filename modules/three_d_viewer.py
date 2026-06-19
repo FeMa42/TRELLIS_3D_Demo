@@ -213,10 +213,10 @@ class ThreeDViewer:
         return (
             "child.material.side = THREE.DoubleSide;\n"
             "                            // Ensure materials are well-lit\n"
-            "                            if (child.material.metalness !== undefined) {{\n"
+            "                            if (child.material.metalness !== undefined) {\n"
             f"                                child.material.metalness = {self.config.model_metalness};\n"
             f"                                child.material.roughness = {self.config.model_roughness};\n"
-            "                            }}"
+            "                            }"
         )
 
     def _generate_javascript(self, glb_data: str) -> str:

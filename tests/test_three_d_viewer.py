@@ -16,3 +16,4 @@ def test_normals_true_uses_normal_material(tmp_path):
 def test_normals_false_keeps_default_material(tmp_path):
     html = create_3d_viewer_html(_glb(tmp_path), normals=False)
     assert "MeshNormalMaterial" not in html
+    assert "{{" not in html and "}}" not in html

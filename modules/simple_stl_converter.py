@@ -97,7 +97,7 @@ def prepare_printable_mesh(glb_path: str):
         except Exception as e:
             print(f"⚠️  print remesh failed ({type(e).__name__}: {e}); using gentle repair")
     if remeshed is not None:
-        print("🧱 Applied watertight print remesh (voxel288_smooth)")
+        print(f"🧱 Applied watertight print remesh ({mode})")
         return remeshed
     return ensure_printable_mesh(mesh)
 
